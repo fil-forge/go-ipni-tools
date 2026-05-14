@@ -92,8 +92,8 @@ github.com/fil-forge/go-ucanto v0.0.0-20260507172450-5cb5d073f8ab h1:2J2cDThqTKP
 github.com/fil-forge/go-ucanto v0.0.0-20260507172450-5cb5d073f8ab/go.mod h1:lZF3UXZ2hGLKYmXdquG50JqI9pRlUrV6lubGtgOYfwc=
 github.com/fil-forge/libforge v0.0.0-20260514144223-d4e04b850082 h1:ZDDTs9AsmAVUQKOmLjo7DMZvjQ3oNuQ8StJgbPsxgDQ=
 github.com/fil-forge/libforge v0.0.0-20260514144223-d4e04b850082/go.mod h1:U1D38PgLNaIiqVh2bPoprGEKe2HQmYs/bLptFMjdebM=
-github.com/fil-forge/ucantone v0.0.0-20260512173820-ea7128569686 h1:Weu36rT9cQrmM41qX1EL3ML1K1a+bdidVGacy75HSro=
-github.com/fil-forge/ucantone v0.0.0-20260512173820-ea7128569686/go.mod h1:vqgVEsy6LEEsY24Zyjxem0vSofj1XTIx29GbV635f+I=
+github.com/fil-forge/ucantone v0.0.0-20260514184915-8bebe15b0096 h1:T/JkfzRNu4/9OnqgggVWbn+OXs/y12xDSVEen0NS7EY=
+github.com/fil-forge/ucantone v0.0.0-20260514184915-8bebe15b0096/go.mod h1:vqgVEsy6LEEsY24Zyjxem0vSofj1XTIx29GbV635f+I=
 github.com/filecoin-project/go-clock v0.1.0 h1:SFbYIM75M8NnFm1yMHhN9Ahy3W5bEZV9gd6MPfXbKVU=
 github.com/filecoin-project/go-clock v0.1.0/go.mod h1:4uB/O4PvOjlx1VCMdZ9MyDZXRm//gkj1ELEbxfI1AZs=
 github.com/flynn/noise v1.1.0 h1:KjPQoQCEFdZDiP03phOvGi11+SVVhBG2wOWAorLsstg=
