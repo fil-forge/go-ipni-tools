@@ -4,8 +4,8 @@ go 1.25.7
 
 require (
 	github.com/fil-forge/go-ucanto v0.0.0-20260507172450-5cb5d073f8ab
-	github.com/fil-forge/libforge v0.0.0-20260514144223-d4e04b850082
-	github.com/fil-forge/ucantone v0.0.0-20260514184915-8bebe15b0096
+	github.com/fil-forge/libforge v0.0.0-20260519133220-4d5747ca0927
+	github.com/fil-forge/ucantone v0.0.0-20260519122919-0ee8deb17aa4
 	github.com/ipfs/go-cid v0.6.1
 	github.com/ipfs/go-datastore v0.9.1
 	github.com/ipfs/go-log/v2 v2.9.1

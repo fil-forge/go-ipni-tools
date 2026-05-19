@@ -90,10 +90,10 @@ github.com/envoyproxy/protoc-gen-validate v0.1.0/go.mod h1:iSmxcyjqTsJpI2R4NaDN7
 github.com/fatih/color v1.7.0/go.mod h1:Zm6kSWBoL9eyXnKyktHP6abPY2pDugNf5KwzbycvMj4=
 github.com/fil-forge/go-ucanto v0.0.0-20260507172450-5cb5d073f8ab h1:2J2cDThqTKP6/0k3SfdlSxfyPa3aLqjTYnmvbEcryfg=
 github.com/fil-forge/go-ucanto v0.0.0-20260507172450-5cb5d073f8ab/go.mod h1:lZF3UXZ2hGLKYmXdquG50JqI9pRlUrV6lubGtgOYfwc=
-github.com/fil-forge/libforge v0.0.0-20260514144223-d4e04b850082 h1:ZDDTs9AsmAVUQKOmLjo7DMZvjQ3oNuQ8StJgbPsxgDQ=
-github.com/fil-forge/libforge v0.0.0-20260514144223-d4e04b850082/go.mod h1:U1D38PgLNaIiqVh2bPoprGEKe2HQmYs/bLptFMjdebM=
-github.com/fil-forge/ucantone v0.0.0-20260514184915-8bebe15b0096 h1:T/JkfzRNu4/9OnqgggVWbn+OXs/y12xDSVEen0NS7EY=
-github.com/fil-forge/ucantone v0.0.0-20260514184915-8bebe15b0096/go.mod h1:vqgVEsy6LEEsY24Zyjxem0vSofj1XTIx29GbV635f+I=
+github.com/fil-forge/libforge v0.0.0-20260519133220-4d5747ca0927 h1:AqqpZ7jsb26N+1Fmq2URToRjOBha26NmYptqCIO1qJY=
+github.com/fil-forge/libforge v0.0.0-20260519133220-4d5747ca0927/go.mod h1:FtlBeLxBao1mIU2ILE5loXr+KSrCFAoXoQHOPJBZGsE=
+github.com/fil-forge/ucantone v0.0.0-20260519122919-0ee8deb17aa4 h1:Bxmm9l6RE+68luYvekbnmTe7+1epRPZHnSagcMtdvyY=
+github.com/fil-forge/ucantone v0.0.0-20260519122919-0ee8deb17aa4/go.mod h1:vqgVEsy6LEEsY24Zyjxem0vSofj1XTIx29GbV635f+I=
 github.com/filecoin-project/go-clock v0.1.0 h1:SFbYIM75M8NnFm1yMHhN9Ahy3W5bEZV9gd6MPfXbKVU=
 github.com/filecoin-project/go-clock v0.1.0/go.mod h1:4uB/O4PvOjlx1VCMdZ9MyDZXRm//gkj1ELEbxfI1AZs=
 github.com/flynn/noise v1.1.0 h1:KjPQoQCEFdZDiP03phOvGi11+SVVhBG2wOWAorLsstg=

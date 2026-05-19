@@ -13,7 +13,7 @@ import (
 	"github.com/libp2p/go-libp2p/core/peer"
 	mh "github.com/multiformats/go-multihash"
 
-	"github.com/fil-forge/libforge/capabilities/assert"
+	"github.com/fil-forge/libforge/commands/assert"
 	"github.com/fil-forge/libforge/digestutil"
 )
 

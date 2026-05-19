@@ -9,8 +9,8 @@ import (
 	"github.com/libp2p/go-libp2p/core/peer"
 	"github.com/multiformats/go-multiaddr"
 
-	"github.com/fil-forge/libforge/capabilities"
-	"github.com/fil-forge/libforge/capabilities/assert"
+	"github.com/fil-forge/libforge/commands"
+	"github.com/fil-forge/libforge/commands/assert"
 	"github.com/fil-forge/libforge/digestutil"
 	"github.com/fil-forge/libforge/testutil"
 
@@ -46,8 +46,8 @@ func TestShardCID(t *testing.T) {
 			},
 			caveats: assert.LocationArguments{
 				Content: testMhs[0],
-				Location: []capabilities.CborURL{
-					capabilities.CborURL(*baseUrl.JoinPath("piece", testPieceLink.String())),
+				Location: []commands.CborURL{
+					commands.CborURL(*baseUrl.JoinPath("piece", testPieceLink.String())),
 				},
 			},
 			expected: func() *cid.Cid {
@@ -66,8 +66,8 @@ func TestShardCID(t *testing.T) {
 			},
 			caveats: assert.LocationArguments{
 				Content: testMhs[0],
-				Location: []capabilities.CborURL{
-					capabilities.CborURL(*baseUrl.JoinPath("blob", digestutil.Format(testMhs[1]), digestutil.Format(testMhs[1]))),
+				Location: []commands.CborURL{
+					commands.CborURL(*baseUrl.JoinPath("blob", digestutil.Format(testMhs[1]), digestutil.Format(testMhs[1]))),
 				},
 			},
 			expected: func() *cid.Cid {
@@ -86,8 +86,8 @@ func TestShardCID(t *testing.T) {
 			},
 			caveats: assert.LocationArguments{
 				Content: testMhs[0],
-				Location: []capabilities.CborURL{
-					capabilities.CborURL(*baseUrl.JoinPath("blob", testCid.String(), digestutil.Format(testCid.Hash()))),
+				Location: []commands.CborURL{
+					commands.CborURL(*baseUrl.JoinPath("blob", testCid.String(), digestutil.Format(testCid.Hash()))),
 				},
 			},
 			expected: func() *cid.Cid {
@@ -105,8 +105,8 @@ func TestShardCID(t *testing.T) {
 				},
 			},
 			caveats: assert.LocationArguments{
-				Location: []capabilities.CborURL{
-					capabilities.CborURL(*baseUrl.JoinPath("blob", digestutil.Format(testMhs[1]), digestutil.Format(testMhs[1]))),
+				Location: []commands.CborURL{
+					commands.CborURL(*baseUrl.JoinPath("blob", digestutil.Format(testMhs[1]), digestutil.Format(testMhs[1]))),
 				},
 				Content: testMhs[0],
 			},
@@ -121,8 +121,8 @@ func TestShardCID(t *testing.T) {
 				},
 			},
 			caveats: assert.LocationArguments{
-				Location: []capabilities.CborURL{
-					capabilities.CborURL(*baseUrl.JoinPath("piece", "applesauce")),
+				Location: []commands.CborURL{
+					commands.CborURL(*baseUrl.JoinPath("piece", "applesauce")),
 				},
 				Content: testMhs[0],
 			},
