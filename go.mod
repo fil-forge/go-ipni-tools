@@ -8,7 +8,7 @@ require (
 	github.com/fil-forge/ucantone v0.0.0-20260630103048-a8f24fe31eb6
 	github.com/ipfs/go-cid v0.6.1
 	github.com/ipfs/go-datastore v0.9.1
-	github.com/ipfs/go-log/v2 v2.9.1
+	github.com/ipfs/go-log/v2 v2.9.2
 	github.com/ipld/go-ipld-prime v0.23.0
 	github.com/ipni/go-libipni v0.7.8
 	github.com/libp2p/go-libp2p v0.48.0
@@ -32,7 +32,7 @@ require (
 	github.com/libp2p/go-buffer-pool v0.1.0 // indirect
 	github.com/libp2p/go-libp2p-pubsub v0.16.0 // indirect
 	github.com/libp2p/go-msgio v0.3.0 // indirect
-	github.com/mattn/go-isatty v0.0.20 // indirect
+	github.com/mattn/go-isatty v0.0.22 // indirect
 	github.com/minio/sha256-simd v1.0.1 // indirect
 	github.com/mr-tron/base58 v1.3.0 // indirect
 	github.com/multiformats/go-base32 v0.1.0 // indirect
