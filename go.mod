@@ -7,7 +7,7 @@ require (
 	github.com/fil-forge/libforge v0.0.0-20260701162346-f0706e1641a3
 	github.com/fil-forge/ucantone v0.0.0-20260630103048-a8f24fe31eb6
 	github.com/ipfs/go-cid v0.6.1
-	github.com/ipfs/go-datastore v0.9.1
+	github.com/ipfs/go-datastore v0.9.2
 	github.com/ipfs/go-log/v2 v2.9.2
 	github.com/ipld/go-ipld-prime v0.24.0
 	github.com/ipni/go-libipni v0.7.8
