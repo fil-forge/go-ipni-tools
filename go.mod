@@ -10,7 +10,7 @@ require (
 	github.com/ipfs/go-datastore v0.9.2
 	github.com/ipfs/go-log/v2 v2.9.2
 	github.com/ipld/go-ipld-prime v0.24.0
-	github.com/ipni/go-libipni v0.7.8
+	github.com/ipni/go-libipni v0.8.0
 	github.com/libp2p/go-libp2p v0.48.0
 	github.com/multiformats/go-multiaddr v0.16.1
 	github.com/multiformats/go-multibase v0.3.0
