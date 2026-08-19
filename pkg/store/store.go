@@ -27,6 +27,7 @@ import (
 	"github.com/multiformats/go-multihash"
 
 	"github.com/fil-forge/go-ucanto/core/ipld/block"
+	"github.com/fil-forge/go-ucanto/core/ipld/codec/cbor"
 	"github.com/fil-forge/go-ucanto/core/ipld/codec/json"
 	"github.com/fil-forge/go-ucanto/core/ipld/hash/sha256"
 )
@@ -400,7 +401,7 @@ func PutMetadata(ctx context.Context, ds ProviderContextTable, p peer.ID, contex
 }
 
 func store(ctx context.Context, ds SimpleStore, value any, typ ipldschema.Type) (ipld.Link, error) {
-	blk, err := block.Encode(value, typ, json.Codec, sha256.Hasher)
+	blk, err := block.Encode(value, typ, cbor.Codec, sha256.Hasher)
 	if err != nil {
 		return nil, err
 	}
