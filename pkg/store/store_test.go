@@ -217,6 +217,8 @@ func TestEntriesMixedDagJsonCBORChain(t *testing.T) {
 	}
 
 	// Expect cbor mhs first, then json mhs (chain order).
-	expected := append(cborMhs, jsonMhs...)
+	expected := make([]multihash.Multihash, 0, len(cborMhs)+len(jsonMhs))
+	expected = append(expected, cborMhs...)
+	expected = append(expected, jsonMhs...)
 	require.Equal(t, expected, gotMhs)
 }
