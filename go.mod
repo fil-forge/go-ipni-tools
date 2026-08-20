@@ -3,7 +3,6 @@ module github.com/fil-forge/go-ipni-tools
 go 1.25.7
 
 require (
-	github.com/fil-forge/go-ucanto v0.0.0-20260507172450-5cb5d073f8ab
 	github.com/fil-forge/libforge v0.0.0-20260701162346-f0706e1641a3
 	github.com/fil-forge/ucantone v0.0.0-20260630103048-a8f24fe31eb6
 	github.com/ipfs/go-cid v0.6.2

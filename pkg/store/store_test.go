@@ -3,19 +3,24 @@ package store_test
 import (
 	"bytes"
 	"context"
+	"crypto/rand"
 	"fmt"
 	"io"
 	"slices"
 	"testing"
 
+	"github.com/ipfs/go-cid"
 	"github.com/ipfs/go-datastore"
 	"github.com/ipld/go-ipld-prime"
 	"github.com/ipld/go-ipld-prime/codec/dagcbor"
+	"github.com/ipld/go-ipld-prime/codec/dagjson"
 	cidlink "github.com/ipld/go-ipld-prime/linking/cid"
 	"github.com/ipld/go-ipld-prime/node/bindnode"
 	ipldschema "github.com/ipld/go-ipld-prime/schema"
+	"github.com/ipni/go-libipni/dagsync/ipnisync/head"
 	libschema "github.com/ipni/go-libipni/ingest/schema"
 	"github.com/ipni/go-libipni/metadata"
+	"github.com/libp2p/go-libp2p/core/crypto"
 	"github.com/libp2p/go-libp2p/core/peer"
 	"github.com/multiformats/go-multicodec"
 	"github.com/multiformats/go-multihash"
@@ -23,11 +28,6 @@ import (
 	"github.com/stretchr/testify/require"
 
 	"github.com/fil-forge/go-ipni-tools/internal/testutil"
-	"github.com/fil-forge/go-ucanto/core/ipld/block"
-	ucborcodec "github.com/fil-forge/go-ucanto/core/ipld/codec/cbor"
-	ujsoncodec "github.com/fil-forge/go-ucanto/core/ipld/codec/json"
-	"github.com/fil-forge/go-ucanto/core/ipld/hash/sha256"
-
 	"github.com/fil-forge/go-ipni-tools/pkg/store"
 )
 
@@ -188,30 +188,28 @@ func TestEntriesMixedDagJsonCBORChain(t *testing.T) {
 	// Build a legacy dag-json entry chunk and insert it directly into the store.
 	jsonMhs := testutil.RandomMultihashes(t, 3)
 	jsonChunk := &libschema.EntryChunk{Entries: jsonMhs}
-	jsonBlk, err := block.Encode(jsonChunk, libschema.EntryChunkPrototype.Type(), ujsoncodec.Codec, sha256.Hasher)
-	require.NoError(t, err)
-	require.Equal(t, uint64(multicodec.DagJson), jsonBlk.Link().(cidlink.Link).Cid.Prefix().Codec,
+	jsonLink, jsonBytes := encodeBlock(t, jsonChunk, multicodec.DagJson, dagjson.Encode)
+	require.Equal(t, uint64(multicodec.DagJson), jsonLink.(cidlink.Link).Cid.Prefix().Codec,
 		"manually encoded block should use dag-json codec")
 
 	ss := store.SimpleStoreFromDatastore(ds)
-	err = ss.Put(ctx, jsonBlk.Link().String(), uint64(len(jsonBlk.Bytes())), bytes.NewReader(jsonBlk.Bytes()))
+	err := ss.Put(ctx, jsonLink.String(), uint64(len(jsonBytes)), bytes.NewReader(jsonBytes))
 	require.NoError(t, err)
 
 	// Build a new dag-cbor entry chunk whose Next pointer refers to the dag-json chunk.
 	cborMhs := testutil.RandomMultihashes(t, 3)
-	cborChunk := &libschema.EntryChunk{Entries: cborMhs, Next: jsonBlk.Link()}
-	cborBlk, err := block.Encode(cborChunk, libschema.EntryChunkPrototype.Type(), ucborcodec.Codec, sha256.Hasher)
-	require.NoError(t, err)
-	require.Equal(t, uint64(multicodec.DagCbor), cborBlk.Link().(cidlink.Link).Cid.Prefix().Codec,
+	cborChunk := &libschema.EntryChunk{Entries: cborMhs, Next: jsonLink}
+	cborLink, cborBytes := encodeBlock(t, cborChunk, multicodec.DagCbor, dagcbor.Encode)
+	require.Equal(t, uint64(multicodec.DagCbor), cborLink.(cidlink.Link).Cid.Prefix().Codec,
 		"new block should use dag-cbor codec")
 
-	err = ss.Put(ctx, cborBlk.Link().String(), uint64(len(cborBlk.Bytes())), bytes.NewReader(cborBlk.Bytes()))
+	err = ss.Put(ctx, cborLink.String(), uint64(len(cborBytes)), bytes.NewReader(cborBytes))
 	require.NoError(t, err)
 
 	// Read the mixed chain via the AdStore.
 	s := store.FromDatastore(ds)
 	var gotMhs []multihash.Multihash
-	for mh, err := range s.Entries(ctx, cborBlk.Link()) {
+	for mh, err := range s.Entries(ctx, cborLink) {
 		require.NoError(t, err)
 		gotMhs = append(gotMhs, mh)
 	}
@@ -221,4 +219,102 @@ func TestEntriesMixedDagJsonCBORChain(t *testing.T) {
 	expected = append(expected, cborMhs...)
 	expected = append(expected, jsonMhs...)
 	require.Equal(t, expected, gotMhs)
+}
+
+// TestStoredBlockCIDs verifies that blocks written by PutEntries, PutAdvert
+// and ReplaceHead produce CIDs with the expected codec and a sha2-256
+// multihash, that each CID is consistent with the stored bytes, and that the
+// stored bytes round-trip through the go-libipni decoders.
+func TestStoredBlockCIDs(t *testing.T) {
+	ctx := context.Background()
+	s := store.FromDatastore(datastore.NewMapDatastore())
+
+	// Entries are dag-cbor encoded.
+	mhs := testutil.RandomMultihashes(t, 3)
+	entriesLink, err := s.PutEntries(ctx, slices.Values(mhs))
+	require.NoError(t, err)
+	entriesCid := entriesLink.(cidlink.Link).Cid
+	requireCidPrefix(t, entriesCid, multicodec.DagCbor)
+	entriesBytes := encodedBytes(t, ctx, s, entriesLink)
+	requireCidMatchesBytes(t, entriesCid, entriesBytes)
+	chunk, err := libschema.BytesToEntryChunk(entriesCid, entriesBytes)
+	require.NoError(t, err)
+	require.Equal(t, mhs, chunk.Entries)
+
+	// Adverts are dag-cbor encoded.
+	md := metadata.Default.New()
+	mdBytes, err := md.MarshalBinary()
+	require.NoError(t, err)
+	ad := libschema.Advertisement{
+		Provider:  testutil.RandomPeer(t).String(),
+		Addresses: []string{},
+		Entries:   entriesLink,
+		ContextID: []byte{1},
+		Metadata:  mdBytes,
+	}
+	adLink, err := s.PutAdvert(ctx, ad)
+	require.NoError(t, err)
+	adCid := adLink.(cidlink.Link).Cid
+	requireCidPrefix(t, adCid, multicodec.DagCbor)
+	adBytes := encodedBytes(t, ctx, s, adLink)
+	requireCidMatchesBytes(t, adCid, adBytes)
+	gotAd, err := libschema.BytesToAdvertisement(adCid, adBytes)
+	require.NoError(t, err)
+	require.Equal(t, ad.Provider, gotAd.Provider)
+	require.Equal(t, ad.ContextID, gotAd.ContextID)
+	require.Equal(t, ad.Entries, gotAd.Entries)
+
+	// The head is dag-json encoded by convention.
+	pk, _, err := crypto.GenerateEd25519Key(rand.Reader)
+	require.NoError(t, err)
+	sh, err := head.NewSignedHead(adCid, "/indexer/ingest/mainnet", pk)
+	require.NoError(t, err)
+	headLink, err := s.ReplaceHead(ctx, nil, sh)
+	require.NoError(t, err)
+	headCid := headLink.(cidlink.Link).Cid
+	requireCidPrefix(t, headCid, multicodec.DagJson)
+	var headBytes bytes.Buffer
+	require.NoError(t, s.EncodeHead(ctx, &headBytes))
+	requireCidMatchesBytes(t, headCid, headBytes.Bytes())
+	gotHead, err := head.Decode(bytes.NewReader(headBytes.Bytes()))
+	require.NoError(t, err)
+	require.Equal(t, sh, gotHead)
+}
+
+// encodedBytes returns the raw stored bytes for the given link.
+func encodedBytes(t *testing.T, ctx context.Context, s store.FullStore, lnk ipld.Link) []byte {
+	t.Helper()
+	var buf bytes.Buffer
+	require.NoError(t, s.Encode(ctx, lnk, &buf))
+	return buf.Bytes()
+}
+
+// requireCidPrefix asserts the CID is v1 with the given codec and a sha2-256
+// multihash.
+func requireCidPrefix(t *testing.T, c cid.Cid, codec multicodec.Code) {
+	t.Helper()
+	prefix := c.Prefix()
+	require.Equal(t, uint64(1), prefix.Version)
+	require.Equal(t, uint64(codec), prefix.Codec)
+	require.Equal(t, uint64(multihash.SHA2_256), prefix.MhType)
+}
+
+// requireCidMatchesBytes asserts the CID's digest is the sha2-256 hash of the
+// given data.
+func requireCidMatchesBytes(t *testing.T, c cid.Cid, data []byte) {
+	t.Helper()
+	mh, err := multihash.Sum(data, multihash.SHA2_256, -1)
+	require.NoError(t, err)
+	require.Equal(t, c, cid.NewCidV1(c.Prefix().Codec, mh))
+}
+
+// encodeBlock encodes an entry chunk with the given IPLD codec, mirroring the
+// block encoding performed by the store.
+func encodeBlock(t *testing.T, chunk *libschema.EntryChunk, codec multicodec.Code, encoder ipld.Encoder) (ipld.Link, []byte) {
+	t.Helper()
+	data, err := ipld.Marshal(encoder, chunk, libschema.EntryChunkPrototype.Type())
+	require.NoError(t, err)
+	mh, err := multihash.Sum(data, multihash.SHA2_256, -1)
+	require.NoError(t, err)
+	return cidlink.Link{Cid: cid.NewCidV1(uint64(codec), mh)}, data
 }

@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 
+	"github.com/ipld/go-ipld-prime"
 	cidlink "github.com/ipld/go-ipld-prime/linking/cid"
 	"github.com/ipni/go-libipni/announce"
 	"github.com/ipni/go-libipni/announce/httpsender"
@@ -11,8 +12,6 @@ import (
 	"github.com/ipni/go-libipni/ingest/schema"
 	"github.com/libp2p/go-libp2p/core/crypto"
 	"github.com/libp2p/go-libp2p/core/peer"
-
-	"github.com/fil-forge/go-ucanto/core/ipld"
 
 	"github.com/fil-forge/go-ipni-tools/pkg/store"
 )
