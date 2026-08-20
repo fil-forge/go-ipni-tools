@@ -16,20 +16,19 @@ import (
 	"github.com/ipfs/go-datastore/namespace"
 	logging "github.com/ipfs/go-log/v2"
 	"github.com/ipld/go-ipld-prime"
+	_ "github.com/ipld/go-ipld-prime/codec/dagcbor" // register dag-cbor codec
+	_ "github.com/ipld/go-ipld-prime/codec/dagjson" // register dag-json codec
 	"github.com/ipld/go-ipld-prime/datamodel"
 	cidlink "github.com/ipld/go-ipld-prime/linking/cid"
+	ipldmulticodec "github.com/ipld/go-ipld-prime/multicodec"
 	ipldschema "github.com/ipld/go-ipld-prime/schema"
 	"github.com/ipni/go-libipni/dagsync/ipnisync/head"
 	"github.com/ipni/go-libipni/ingest/schema"
 	"github.com/ipni/go-libipni/metadata"
 	"github.com/libp2p/go-libp2p/core/peer"
 	"github.com/multiformats/go-multibase"
+	"github.com/multiformats/go-multicodec"
 	"github.com/multiformats/go-multihash"
-
-	"github.com/fil-forge/go-ucanto/core/ipld/block"
-	"github.com/fil-forge/go-ucanto/core/ipld/codec/cbor"
-	"github.com/fil-forge/go-ucanto/core/ipld/codec/json"
-	"github.com/fil-forge/go-ucanto/core/ipld/hash/sha256"
 )
 
 var log = logging.Logger("store")
@@ -344,24 +343,25 @@ func EncodeHead(ctx context.Context, ds SimpleStore, w io.Writer) error {
 }
 
 func ReplaceHead(ctx context.Context, ds Store, oldHead *head.SignedHead, newHead *head.SignedHead) (datamodel.Link, error) {
-	blk, err := block.Encode(newHead, head.SignedHeadPrototype.Type(), json.Codec, sha256.Hasher)
+	// The head is dag-json encoded by convention — unlike adverts and entries
+	// it is fetched by name ("head"), so there is no CID to signal its codec.
+	newLink, newBytes, err := encodeBlock(newHead, head.SignedHeadPrototype.Type(), multicodec.DagJson)
 	if err != nil {
 		return nil, err
 	}
-	newBytes := blk.Bytes()
 	var oldBytesReader io.Reader
 	if oldHead != nil {
-		blk, err := block.Encode(oldHead, head.SignedHeadPrototype.Type(), json.Codec, sha256.Hasher)
+		_, oldBytes, err := encodeBlock(oldHead, head.SignedHeadPrototype.Type(), multicodec.DagJson)
 		if err != nil {
 			return nil, err
 		}
-		oldBytesReader = bytes.NewReader(blk.Bytes())
+		oldBytesReader = bytes.NewReader(oldBytes)
 	}
 	err = ds.Replace(ctx, headKey, oldBytesReader, uint64(len(newBytes)), bytes.NewReader(newBytes))
 	if err != nil {
 		return nil, err
 	}
-	return blk.Link(), nil
+	return newLink, nil
 }
 
 func ChunkLink(ctx context.Context, ds ProviderContextTable, p peer.ID, contextID []byte) (datamodel.Link, error) {
@@ -401,15 +401,47 @@ func PutMetadata(ctx context.Context, ds ProviderContextTable, p peer.ID, contex
 }
 
 func store(ctx context.Context, ds SimpleStore, value any, typ ipldschema.Type) (ipld.Link, error) {
-	blk, err := block.Encode(value, typ, cbor.Codec, sha256.Hasher)
+	lnk, data, err := encodeBlock(value, typ, multicodec.DagCbor)
 	if err != nil {
 		return nil, err
 	}
-	err = ds.Put(ctx, blk.Link().String(), uint64(len(blk.Bytes())), bytes.NewReader(blk.Bytes()))
+	err = ds.Put(ctx, lnk.String(), uint64(len(data)), bytes.NewReader(data))
 	if err != nil {
 		return nil, err
 	}
-	return blk.Link(), nil
+	return lnk, nil
+}
+
+// encodeBlock encodes the value with the given IPLD codec and returns the
+// link (a CID of that codec with sha2-256 multihash) along with the encoded
+// bytes.
+func encodeBlock(value any, typ ipldschema.Type, codec multicodec.Code) (_ ipld.Link, _ []byte, err error) {
+	// bindnode panics on schema mismatch, so recover it into an error.
+	defer func() {
+		if r := recover(); r != nil {
+			switch v := r.(type) {
+			case string:
+				err = errors.New(v)
+			case error:
+				err = v
+			default:
+				err = fmt.Errorf("unknown panic encoding block: %+v", r)
+			}
+		}
+	}()
+	encoder, err := ipldmulticodec.LookupEncoder(uint64(codec))
+	if err != nil {
+		return nil, nil, err
+	}
+	data, err := ipld.Marshal(encoder, value, typ)
+	if err != nil {
+		return nil, nil, err
+	}
+	mh, err := multihash.Sum(data, multihash.SHA2_256, -1)
+	if err != nil {
+		return nil, nil, err
+	}
+	return cidlink.Link{Cid: cid.NewCidV1(uint64(codec), mh)}, data, nil
 }
 
 func toChunk(mhs []multihash.Multihash, next ipld.Link) *schema.EntryChunk {

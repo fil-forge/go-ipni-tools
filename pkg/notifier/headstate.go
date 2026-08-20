@@ -6,8 +6,8 @@ import (
 	"fmt"
 	"io"
 
-	"github.com/fil-forge/go-ucanto/core/ipld"
 	"github.com/ipfs/go-cid"
+	"github.com/ipld/go-ipld-prime"
 	cidlink "github.com/ipld/go-ipld-prime/linking/cid"
 
 	"github.com/fil-forge/go-ipni-tools/pkg/store"
