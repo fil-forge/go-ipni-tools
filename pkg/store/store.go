@@ -421,11 +421,11 @@ func encodeBlock(value any, typ ipldschema.Type, codec multicodec.Code) (_ ipld.
 		if r := recover(); r != nil {
 			switch v := r.(type) {
 			case string:
-				err = errors.New(v)
+				err = fmt.Errorf("panic encoding block: %s", v)
 			case error:
-				err = v
+				err = fmt.Errorf("panic encoding block: %w", v)
 			default:
-				err = fmt.Errorf("unknown panic encoding block: %+v", r)
+				err = fmt.Errorf("panic encoding block: %T: %v", r, r)
 			}
 		}
 	}()
