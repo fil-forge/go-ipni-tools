@@ -368,6 +368,33 @@ func TestPublishBatchRollback(t *testing.T) {
 		require.Len(t, chainFrom(t, ctx, st, head), 3, "the retry publishes every advert of the batch")
 	})
 
+	t.Run("a metadata row without an entries mapping survives a failed batch", func(t *testing.T) {
+		st := batchStore()
+		spec := batchSpecs(t, 1)[0]
+		// What a commit that failed under an older release leaves behind:
+		// the entries mapping dropped, the metadata row still there.
+		orphan := metadata.MetadataContext.New(&metadata.LocationCommitmentMetadata{Claim: testutil.RandomCID(t)})
+		require.NoError(t, st.PutMetadataForProviderAndContextID(ctx, pid, []byte(spec.ContextID), orphan))
+
+		failing := &failingHeadStore{PublisherStore: st, failNext: true}
+		p, err := publisher.New(priv, failing)
+		require.NoError(t, err)
+		_, err = p.PublishBatch(ctx, provInfo, []publisher.AdvertSpec{spec})
+		require.ErrorContains(t, err, errInjected.Error())
+
+		// The store is as it was found: no entries mapping, the old metadata.
+		_, err = st.ChunkLinkForProviderAndContextID(ctx, pid, []byte(spec.ContextID))
+		require.True(t, store.IsNotFound(err), "entries mapping left behind")
+		got, err := st.MetadataForProviderAndContextID(ctx, pid, []byte(spec.ContextID))
+		require.NoError(t, err, "the pre-existing metadata row must survive the rollback")
+		require.True(t, orphan.Equal(got), "the pre-existing metadata row must be restored, not replaced")
+
+		// And the content still publishes on retry.
+		head, err := p.PublishBatch(ctx, provInfo, []publisher.AdvertSpec{spec})
+		require.NoError(t, err)
+		require.Len(t, chainFrom(t, ctx, st, head), 1)
+	})
+
 	t.Run("a failed commit whose rollback fails reports both", func(t *testing.T) {
 		st := batchStore()
 		// The commit fails, and so does every mapping delete the rollback then

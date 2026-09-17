@@ -55,11 +55,15 @@ func generateAd(ctx context.Context, publisherStore store.PublisherStore, peer p
 		}
 	}
 
-	// What the store mapped before this call, for the undo.
+	// What the store mapped before this call, for the undo. The metadata is
+	// read whether or not an entries mapping exists: a metadata row can be
+	// there on its own, left by a commit that failed under an older release,
+	// and the undo must put it back rather than delete it. A removal of
+	// unmapped content writes nothing, so it needs no snapshot.
 	prevChunk := chunkLink
 	var prevMetadata metadata.Metadata
 	hadMetadata := false
-	if prevChunk != nil {
+	if !isRm || prevChunk != nil {
 		prevMetadata, err = publisherStore.MetadataForProviderAndContextID(ctx, peer, contextID)
 		switch {
 		case err == nil:
