@@ -64,17 +64,36 @@ func (p *AdvertisementPublisher) Commit(ctx context.Context) (ipld.Link, error) 
 	p.pendingAds = nil
 	lnk, err := p.commit(ctx, pendingAds)
 	if err != nil {
-		for _, adv := range pendingAds {
-			if !adv.IsRm {
-				peer, err := peer.Decode(adv.Provider)
-				if err == nil {
-					_ = p.store.DeleteChunkLinkForProviderAndContextID(ctx, peer, adv.ContextID)
-				}
-			}
-		}
+		p.forget(ctx, pendingAds)
 		return nil, err
 	}
 	return lnk, nil
+}
+
+// Discard drops the pending advertisements without publishing them. The
+// store entries that mark their content as advertised go too, so generating
+// the same advertisements again produces them rather than
+// [ErrAlreadyAdvertised]: what was pending lived only in memory, and a store
+// that still called it advertised would make it unpublishable.
+func (p *AdvertisementPublisher) Discard(ctx context.Context) {
+	pendingAds := p.pendingAds
+	p.pendingAds = nil
+	p.forget(ctx, pendingAds)
+}
+
+// forget removes the chunk links generated for advertisements that will not
+// be published, which is what GenerateAd checks to decide whether content is
+// already advertised.
+func (p *AdvertisementPublisher) forget(ctx context.Context, advs []schema.Advertisement) {
+	for _, adv := range advs {
+		if adv.IsRm {
+			continue
+		}
+		peer, err := peer.Decode(adv.Provider)
+		if err == nil {
+			_ = p.store.DeleteChunkLinkForProviderAndContextID(ctx, peer, adv.ContextID)
+		}
+	}
 }
 func (p *AdvertisementPublisher) commit(ctx context.Context, pendingAds []schema.Advertisement) (ipld.Link, error) {
 

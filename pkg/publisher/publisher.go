@@ -2,6 +2,7 @@ package publisher
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"iter"
 
@@ -46,6 +47,56 @@ func (p *IPNIPublisher) Publish(ctx context.Context, providerInfo peer.AddrInfo,
 }
 
 var _ Publisher = (*IPNIPublisher)(nil)
+
+// AdvertSpec is what one advertisement is generated from: the content it
+// announces, the context ID it is published under and the metadata it carries.
+type AdvertSpec struct {
+	ContextID string
+	Digests   iter.Seq[mh.Multihash]
+	Metadata  metadata.Metadata
+}
+
+// BatchPublisher publishes many advertisements under one commit.
+type BatchPublisher interface {
+	// PublishBatch generates one advertisement per spec and publishes them
+	// all under a single commit. See [IPNIPublisher.PublishBatch].
+	PublishBatch(ctx context.Context, provider peer.AddrInfo, specs []AdvertSpec) (ipld.Link, error)
+}
+
+// PublishBatch generates one advertisement per spec and publishes them all
+// under a single commit: one signed head and one announce however many specs
+// there are, where Publish pays both per advertisement. A spec whose content
+// is already advertised with identical metadata is skipped. The returned link
+// is the head after the commit, unchanged when every spec was skipped and nil
+// when nothing has ever been published.
+//
+// A failure leaves nothing behind. The advertisements generated so far are
+// discarded together with the store entries that would otherwise make a retry
+// skip them, so calling again with the same specs publishes every one of
+// them. Like Publish, PublishBatch is not safe for concurrent use.
+func (p *IPNIPublisher) PublishBatch(ctx context.Context, provider peer.AddrInfo, specs []AdvertSpec) (ipld.Link, error) {
+	for _, spec := range specs {
+		adv, err := GenerateAd(ctx, p.store, provider.ID, provider.Addrs, []byte(spec.ContextID), spec.Metadata, false, spec.Digests)
+		if errors.Is(err, ErrAlreadyAdvertised) {
+			continue
+		}
+		if err != nil {
+			p.batchPublisher.Discard(ctx)
+			return nil, fmt.Errorf("generating IPNI advert: %w", err)
+		}
+		if err := p.batchPublisher.AddToBatch(adv); err != nil {
+			p.batchPublisher.Discard(ctx)
+			return nil, fmt.Errorf("batching IPNI advert: %w", err)
+		}
+	}
+	link, err := p.batchPublisher.Commit(ctx)
+	if err != nil {
+		return nil, fmt.Errorf("committing IPNI adverts: %w", err)
+	}
+	return link, nil
+}
+
+var _ BatchPublisher = (*IPNIPublisher)(nil)
 
 // New creates a new IPNI publisher.
 // IPNIPublisher is not safe for concurrent use. There is the risk of losing advertisements if Publish is called
