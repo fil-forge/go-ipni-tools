@@ -3,6 +3,7 @@ package publisher
 import (
 	"context"
 	"encoding/base64"
+	"errors"
 	"fmt"
 	"iter"
 
@@ -15,10 +16,23 @@ import (
 	"github.com/fil-forge/go-ipni-tools/pkg/store"
 )
 
-// GenerateAd generates an advertisement for the given parameters.
+// GenerateAd generates an advertisement for the given parameters. Generation
+// writes the store's mappings for the provider and context ID before it
+// returns; should it fail partway, those writes are undone, so the store is
+// as it was and the call can be retried. Any failure to undo is reported
+// beside the cause.
 func GenerateAd(ctx context.Context, publisherStore store.PublisherStore, peer peer.ID, addrs []multiaddr.Multiaddr, contextID []byte, md metadata.Metadata, isRm bool, mhs iter.Seq[mh.Multihash]) (schema.Advertisement, error) {
-	adv, _, err := generateAd(ctx, publisherStore, peer, addrs, contextID, md, isRm, mhs)
-	return adv, err
+	adv, undo, err := generateAd(ctx, publisherStore, peer, addrs, contextID, md, isRm, mhs)
+	if err == nil || undo == nil || errors.Is(err, ErrAlreadyAdvertised) || errors.Is(err, ErrContextIDNotFound) {
+		// Nothing was written on those two: they report the store as found.
+		return adv, err
+	}
+	cctx, cancel := cleanupContext(ctx)
+	defer cancel()
+	if uerr := undo(cctx); uerr != nil {
+		return schema.Advertisement{}, errors.Join(err, fmt.Errorf("rolling back the advertisement being generated: %w", uerr))
+	}
+	return schema.Advertisement{}, err
 }
 
 // generateAd generates an advertisement and returns, beside it, the undo of

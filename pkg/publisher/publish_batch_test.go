@@ -184,10 +184,18 @@ var errInjected = errors.New("injected store failure")
 // rollback needs to do.
 type failingMetadataStore struct {
 	store.PublisherStore
-	calls       int
-	failOn      int
-	onFail      func()
-	failDeletes bool
+	calls              int
+	failOn             int
+	onFail             func()
+	failDeletes        bool
+	failMetadataDelete bool
+}
+
+func (f *failingMetadataStore) DeleteMetadataForProviderAndContextID(ctx context.Context, p peer.ID, contextID []byte) error {
+	if f.failMetadataDelete {
+		return fmt.Errorf("metadata delete: %w", errInjected)
+	}
+	return f.PublisherStore.DeleteMetadataForProviderAndContextID(ctx, p, contextID)
 }
 
 func (f *failingMetadataStore) PutMetadataForProviderAndContextID(ctx context.Context, p peer.ID, contextID []byte, md ipnimeta.Metadata) error {
@@ -333,6 +341,33 @@ func TestPublishBatchRollback(t *testing.T) {
 		require.Len(t, chainFrom(t, ctx, st, head), 4, "every spec of the failed batch publishes on retry")
 	})
 
+	t.Run("two specs for one context roll back to nothing", func(t *testing.T) {
+		st := batchStore()
+		// The third metadata write is the new spec's; the first two are the
+		// same context advertised twice, under different metadata.
+		failing := &failingMetadataStore{PublisherStore: st, failOn: 3}
+		p, err := publisher.New(priv, failing)
+		require.NoError(t, err)
+
+		specs := batchSpecs(t, 2)
+		again := specs[0]
+		again.Metadata = metadata.MetadataContext.New(&metadata.LocationCommitmentMetadata{Claim: testutil.RandomCID(t)})
+		batch := []publisher.AdvertSpec{specs[0], again, specs[1]}
+		_, err = p.PublishBatch(ctx, provInfo, batch)
+		require.ErrorContains(t, err, errInjected.Error())
+
+		// Undone newest first, the second advert's undo restores the first's
+		// mapping and the first's undo removes it. The other order would
+		// leave the context mapped and the retry skip the first advert.
+		requireUnmapped(t, ctx, st, pid, specs[0].ContextID, "the twice-advertised context")
+		requireUnmapped(t, ctx, st, pid, specs[1].ContextID, "the new spec")
+
+		failing.failOn = 0
+		head, err := p.PublishBatch(ctx, provInfo, batch)
+		require.NoError(t, err)
+		require.Len(t, chainFrom(t, ctx, st, head), 3, "the retry publishes every advert of the batch")
+	})
+
 	t.Run("a failed commit whose rollback fails reports both", func(t *testing.T) {
 		st := batchStore()
 		// The commit fails, and so does every mapping delete the rollback then
@@ -364,4 +399,82 @@ func (f *failingHeadStore) ReplaceHead(ctx context.Context, oldHead, newHead *he
 		return nil, fmt.Errorf("replace head: %w", errInjected)
 	}
 	return f.PublisherStore.ReplaceHead(ctx, oldHead, newHead)
+}
+
+// TestGenerateAdUndoesPartialWrites pins the exported GenerateAd's own
+// rollback, which the queue-backed publishers rely on: a generation that
+// fails after writing leaves the store as it found it, for additions and for
+// removals alike.
+func TestGenerateAdUndoesPartialWrites(t *testing.T) {
+	priv, _, err := crypto.GenerateEd25519Key(nil)
+	require.NoError(t, err)
+	pid, err := peer.IDFromPrivateKey(priv)
+	require.NoError(t, err)
+	ctx := context.Background()
+
+	t.Run("addition", func(t *testing.T) {
+		st := batchStore()
+		failing := &failingMetadataStore{PublisherStore: st, failOn: 1}
+		spec := batchSpecs(t, 1)[0]
+
+		_, err := publisher.GenerateAd(ctx, failing, pid, nil, []byte(spec.ContextID), spec.Metadata, false, spec.Digests)
+		require.ErrorContains(t, err, errInjected.Error())
+		requireUnmapped(t, ctx, st, pid, spec.ContextID, "the failed addition")
+
+		failing.failOn = 0
+		_, err = publisher.GenerateAd(ctx, failing, pid, nil, []byte(spec.ContextID), spec.Metadata, false, spec.Digests)
+		require.NoError(t, err, "the retry generates the advertisement")
+	})
+
+	t.Run("removal", func(t *testing.T) {
+		st := batchStore()
+		spec := batchSpecs(t, 1)[0]
+		p, err := publisher.New(priv, st)
+		require.NoError(t, err)
+		_, err = p.PublishBatch(ctx, peer.AddrInfo{ID: pid}, []publisher.AdvertSpec{spec})
+		require.NoError(t, err)
+
+		// The removal deletes the entries mapping, then fails deleting the
+		// metadata mapping.
+		failing := &failingMetadataStore{PublisherStore: st, failMetadataDelete: true}
+		_, err = publisher.GenerateAd(ctx, failing, pid, nil, []byte(spec.ContextID), spec.Metadata, true, spec.Digests)
+		require.ErrorContains(t, err, errInjected.Error())
+
+		// Both mappings are back, so the removal can be retried rather than
+		// reporting the content as never advertised.
+		failing.failMetadataDelete = false
+		_, err = publisher.GenerateAd(ctx, failing, pid, nil, []byte(spec.ContextID), spec.Metadata, true, spec.Digests)
+		require.NoError(t, err, "the retried removal finds the mappings it needs")
+		require.NotErrorIs(t, err, publisher.ErrContextIDNotFound)
+	})
+}
+
+// TestAddToBatchRemovalCommitFailureIsReported pins what AddToBatch can and
+// cannot undo: a removal's prior mappings are gone by the time the
+// advertisement exists, so a commit that fails reports that they could not be
+// restored rather than leaving the caller to find out on retry.
+func TestAddToBatchRemovalCommitFailureIsReported(t *testing.T) {
+	priv, _, err := crypto.GenerateEd25519Key(nil)
+	require.NoError(t, err)
+	pid, err := peer.IDFromPrivateKey(priv)
+	require.NoError(t, err)
+	ctx := context.Background()
+
+	st := batchStore()
+	spec := batchSpecs(t, 1)[0]
+	p, err := publisher.New(priv, st)
+	require.NoError(t, err)
+	_, err = p.PublishBatch(ctx, peer.AddrInfo{ID: pid}, []publisher.AdvertSpec{spec})
+	require.NoError(t, err)
+
+	rm, err := publisher.GenerateAd(ctx, st, pid, nil, []byte(spec.ContextID), spec.Metadata, true, spec.Digests)
+	require.NoError(t, err)
+
+	failing := &failingHeadStore{PublisherStore: st, failNext: true}
+	bp, err := publisher.NewAdvertisementPublisher(priv, failing)
+	require.NoError(t, err)
+	require.NoError(t, bp.AddToBatch(rm))
+	_, err = bp.Commit(ctx)
+	require.ErrorContains(t, err, errInjected.Error(), "the commit failure is reported")
+	require.ErrorIs(t, err, publisher.ErrContextIDNotFound, "and so is what a retry of the removal will meet")
 }

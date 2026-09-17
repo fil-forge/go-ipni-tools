@@ -65,8 +65,11 @@ func NewAdvertisementPublisher(id crypto.PrivKey, store store.PublisherStore, op
 // AddToBatch queues an advertisement for the next Commit. Should that commit
 // fail, the mapping from the advertisement's provider and context ID to its
 // entries is dropped, so generating it again produces an advertisement rather
-// than [ErrAlreadyAdvertised]. Publish and PublishBatch generate their
-// advertisements themselves and queue them with an exact undo instead.
+// than [ErrAlreadyAdvertised]. That is all an advertisement alone allows: a
+// removal's generation deleted the mappings the retry would need, and they
+// cannot be recovered here, so a failed commit of a removal reports that.
+// Publish and PublishBatch generate their advertisements themselves and
+// queue them with an exact undo instead.
 func (p *AdvertisementPublisher) AddToBatch(adv schema.Advertisement) error {
 	p.add(adv, forgetChunkLink(p.store, adv))
 	return nil
@@ -110,9 +113,14 @@ func (p *AdvertisementPublisher) Discard(ctx context.Context) error {
 	return undoAll(cctx, pending)
 }
 
+// undoAll runs the pending advertisements' undos newest first. Each undo
+// restores the state from just before its own advertisement was generated,
+// so when two advertisements in a batch share a context ID the later one
+// must be undone first, or it would put the earlier one's mapping back.
 func undoAll(ctx context.Context, pending []pendingAd) error {
 	var errs []error
-	for _, pa := range pending {
+	for i := len(pending) - 1; i >= 0; i-- {
+		pa := pending[i]
 		if pa.undo == nil {
 			continue
 		}
