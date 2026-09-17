@@ -115,6 +115,17 @@ func TestPublishBatch(t *testing.T) {
 		require.EqualValues(t, 1, announces.Load(), "a batch announces once, however many adverts it carries")
 	})
 
+	t.Run("one mapping read per spec", func(t *testing.T) {
+		counting := &countingStore{PublisherStore: batchStore()}
+		p, err := publisher.New(priv, counting)
+		require.NoError(t, err)
+
+		specs := batchSpecs(t, 7)
+		_, err = p.PublishBatch(ctx, provInfo, specs)
+		require.NoError(t, err)
+		require.Equal(t, len(specs), counting.chunkReads, "the prior state is read once, by generation itself")
+	})
+
 	t.Run("already advertised specs are skipped", func(t *testing.T) {
 		st := batchStore()
 		p, err := publisher.New(priv, st)
@@ -168,19 +179,50 @@ func TestPublishBatch(t *testing.T) {
 var errInjected = errors.New("injected store failure")
 
 // failingMetadataStore fails the nth metadata write, which is the last store
-// write GenerateAd makes for an advertisement.
+// write GenerateAd makes for an advertisement. onFail, if set, runs at that
+// moment; failDeletes makes every mapping delete fail too, which is what a
+// rollback needs to do.
 type failingMetadataStore struct {
 	store.PublisherStore
-	calls  int
-	failOn int
+	calls       int
+	failOn      int
+	onFail      func()
+	failDeletes bool
 }
 
 func (f *failingMetadataStore) PutMetadataForProviderAndContextID(ctx context.Context, p peer.ID, contextID []byte, md ipnimeta.Metadata) error {
 	f.calls++
 	if f.calls == f.failOn {
+		if f.onFail != nil {
+			f.onFail()
+		}
 		return fmt.Errorf("metadata write %d: %w", f.calls, errInjected)
 	}
 	return f.PublisherStore.PutMetadataForProviderAndContextID(ctx, p, contextID, md)
+}
+
+var errRollback = errors.New("injected rollback failure")
+
+func (f *failingMetadataStore) DeleteChunkLinkForProviderAndContextID(ctx context.Context, p peer.ID, contextID []byte) error {
+	// A real store refuses work on an ended context; the map store does not.
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	if f.failDeletes {
+		return errRollback
+	}
+	return f.PublisherStore.DeleteChunkLinkForProviderAndContextID(ctx, p, contextID)
+}
+
+// countingStore counts the entries-mapping reads a batch makes.
+type countingStore struct {
+	store.PublisherStore
+	chunkReads int
+}
+
+func (c *countingStore) ChunkLinkForProviderAndContextID(ctx context.Context, p peer.ID, contextID []byte) (ipld.Link, error) {
+	c.chunkReads++
+	return c.PublisherStore.ChunkLinkForProviderAndContextID(ctx, p, contextID)
 }
 
 // requireUnmapped asserts the store maps nothing to the provider and context
@@ -244,6 +286,35 @@ func TestPublishBatchRollback(t *testing.T) {
 		require.Len(t, chainFrom(t, ctx, st, head), 3)
 	})
 
+	t.Run("a rollback that fails is reported beside the cause", func(t *testing.T) {
+		st := batchStore()
+		failing := &failingMetadataStore{PublisherStore: st, failOn: 3, failDeletes: true}
+		p, err := publisher.New(priv, failing)
+		require.NoError(t, err)
+
+		_, err = p.PublishBatch(ctx, provInfo, batchSpecs(t, 4))
+		require.ErrorContains(t, err, errInjected.Error(), "the cause is reported")
+		require.ErrorIs(t, err, errRollback, "so is every mapping the rollback could not undo")
+	})
+
+	t.Run("rollback completes after the caller cancels", func(t *testing.T) {
+		st := batchStore()
+		callerCtx, cancel := context.WithCancel(ctx)
+		// The caller gives up at the moment the store fails, as a request
+		// timeout would.
+		failing := &failingMetadataStore{PublisherStore: st, failOn: 3, onFail: cancel}
+		p, err := publisher.New(priv, failing)
+		require.NoError(t, err)
+
+		specs := batchSpecs(t, 4)
+		_, err = p.PublishBatch(callerCtx, provInfo, specs)
+		require.ErrorContains(t, err, errInjected.Error())
+		require.NotErrorIs(t, err, context.Canceled, "the rollback does not run on the cancelled context")
+		for i, spec := range specs {
+			requireUnmapped(t, ctx, st, pid, spec.ContextID, fmt.Sprintf("spec %d", i))
+		}
+	})
+
 	t.Run("a failed commit rolls the batch back", func(t *testing.T) {
 		st := batchStore()
 		failing := &failingHeadStore{PublisherStore: st, failNext: true}
@@ -260,6 +331,23 @@ func TestPublishBatchRollback(t *testing.T) {
 		head, err := p.PublishBatch(ctx, provInfo, specs)
 		require.NoError(t, err)
 		require.Len(t, chainFrom(t, ctx, st, head), 4, "every spec of the failed batch publishes on retry")
+	})
+
+	t.Run("a failed commit whose rollback fails reports both", func(t *testing.T) {
+		st := batchStore()
+		// The commit fails, and so does every mapping delete the rollback then
+		// attempts; nothing here fails during generation, so the only report
+		// of the rollback comes from the commit's undo of the pending batch.
+		failing := &failingHeadStore{
+			PublisherStore: &failingMetadataStore{PublisherStore: st, failDeletes: true},
+			failNext:       true,
+		}
+		p, err := publisher.New(priv, failing)
+		require.NoError(t, err)
+
+		_, err = p.PublishBatch(ctx, provInfo, batchSpecs(t, 3))
+		require.ErrorContains(t, err, errInjected.Error(), "the commit failure is reported")
+		require.ErrorIs(t, err, errRollback, "so is every pending advert the rollback could not undo")
 	})
 }
 

@@ -77,16 +77,21 @@ type BatchPublisher interface {
 // place. Like Publish, PublishBatch is not safe for concurrent use.
 func (p *IPNIPublisher) PublishBatch(ctx context.Context, provider peer.AddrInfo, specs []AdvertSpec) (ipld.Link, error) {
 	for _, spec := range specs {
-		adv, undo, err := generateAd(ctx, p.store, provider.ID, provider.Addrs, []byte(spec.ContextID), spec.Metadata, spec.Digests)
+		adv, undo, err := generateAd(ctx, p.store, provider.ID, provider.Addrs, []byte(spec.ContextID), spec.Metadata, false, spec.Digests)
 		if errors.Is(err, ErrAlreadyAdvertised) {
 			continue
 		}
 		if err != nil {
+			cctx, cancel := cleanupContext(ctx)
+			defer cancel()
+			errs := []error{fmt.Errorf("generating IPNI advert: %w", err)}
 			if undo != nil {
-				undo(ctx)
+				if uerr := undo(cctx); uerr != nil {
+					errs = append(errs, fmt.Errorf("rolling back the advert being generated: %w", uerr))
+				}
 			}
-			p.batchPublisher.Discard(ctx)
-			return nil, fmt.Errorf("generating IPNI advert: %w", err)
+			errs = append(errs, p.batchPublisher.Discard(cctx))
+			return nil, errors.Join(errs...)
 		}
 		p.batchPublisher.add(adv, undo)
 	}
@@ -115,19 +120,16 @@ func New(id crypto.PrivKey, store store.PublisherStore, opts ...Option) (*IPNIPu
 }
 
 func (p *IPNIPublisher) publishAdvForIndex(ctx context.Context, peer peer.ID, addrs []multiaddr.Multiaddr, contextID []byte, md metadata.Metadata, isRm bool, mhs iter.Seq[mh.Multihash]) (ipld.Link, error) {
-	if isRm {
-		adv, err := GenerateAd(ctx, p.store, peer, addrs, contextID, md, isRm, mhs)
-		if err != nil {
+	adv, undo, err := generateAd(ctx, p.store, peer, addrs, contextID, md, isRm, mhs)
+	if err != nil {
+		// These two report the store as it was found; nothing was written.
+		if errors.Is(err, ErrAlreadyAdvertised) || errors.Is(err, ErrContextIDNotFound) || undo == nil {
 			return nil, err
 		}
-		p.batchPublisher.AddToBatch(adv)
-		return p.batchPublisher.Commit(ctx)
-	}
-
-	adv, undo, err := generateAd(ctx, p.store, peer, addrs, contextID, md, mhs)
-	if err != nil {
-		if undo != nil && !errors.Is(err, ErrAlreadyAdvertised) {
-			undo(ctx)
+		cctx, cancel := cleanupContext(ctx)
+		defer cancel()
+		if uerr := undo(cctx); uerr != nil {
+			return nil, errors.Join(err, fmt.Errorf("rolling back the advert being generated: %w", uerr))
 		}
 		return nil, err
 	}

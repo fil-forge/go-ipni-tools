@@ -2,6 +2,7 @@ package publisher
 
 import (
 	"context"
+	"errors"
 	"fmt"
 
 	"github.com/ipld/go-ipld-prime"
@@ -20,7 +21,7 @@ import (
 // writes that generating it made, for when the commit fails.
 type pendingAd struct {
 	adv  schema.Advertisement
-	undo func(context.Context)
+	undo func(context.Context) error
 }
 
 type AdvertisementPublisher struct {
@@ -72,10 +73,14 @@ func (p *AdvertisementPublisher) AddToBatch(adv schema.Advertisement) error {
 }
 
 // add queues an advertisement with the undo that generating it recorded.
-func (p *AdvertisementPublisher) add(adv schema.Advertisement, undo func(context.Context)) {
+func (p *AdvertisementPublisher) add(adv schema.Advertisement, undo func(context.Context) error) {
 	p.pending = append(p.pending, pendingAd{adv: adv, undo: undo})
 }
 
+// Commit publishes the pending advertisements under one new head and
+// announces it. Should it fail, the store writes generating them made are
+// undone, and any failure to undo is reported beside the commit's error: a
+// mapping left behind would make its content unpublishable on retry.
 func (p *AdvertisementPublisher) Commit(ctx context.Context) (ipld.Link, error) {
 	pending := p.pending
 	p.pending = nil
@@ -85,8 +90,9 @@ func (p *AdvertisementPublisher) Commit(ctx context.Context) (ipld.Link, error) 
 	}
 	lnk, err := p.commit(ctx, advs)
 	if err != nil {
-		undoAll(ctx, pending)
-		return nil, err
+		cctx, cancel := cleanupContext(ctx)
+		defer cancel()
+		return nil, errors.Join(err, undoAll(cctx, pending))
 	}
 	return lnk, nil
 }
@@ -95,19 +101,29 @@ func (p *AdvertisementPublisher) Commit(ctx context.Context) (ipld.Link, error) 
 // the store writes generating them made, so generating the same
 // advertisements again produces them rather than [ErrAlreadyAdvertised]: what
 // was pending lived only in memory, and a store that still called it
-// advertised would make it unpublishable.
-func (p *AdvertisementPublisher) Discard(ctx context.Context) {
+// advertised would make it unpublishable. It reports any undo that failed.
+func (p *AdvertisementPublisher) Discard(ctx context.Context) error {
 	pending := p.pending
 	p.pending = nil
-	undoAll(ctx, pending)
+	cctx, cancel := cleanupContext(ctx)
+	defer cancel()
+	return undoAll(cctx, pending)
 }
 
-func undoAll(ctx context.Context, pending []pendingAd) {
+func undoAll(ctx context.Context, pending []pendingAd) error {
+	var errs []error
 	for _, pa := range pending {
-		if pa.undo != nil {
-			pa.undo(ctx)
+		if pa.undo == nil {
+			continue
+		}
+		if err := pa.undo(ctx); err != nil {
+			errs = append(errs, fmt.Errorf("undoing advertisement for context %x: %w", pa.adv.ContextID, err))
 		}
 	}
+	if len(errs) == 0 {
+		return nil
+	}
+	return fmt.Errorf("rolling back %d of %d pending advertisements failed: %w", len(errs), len(pending), errors.Join(errs...))
 }
 
 func (p *AdvertisementPublisher) commit(ctx context.Context, pendingAds []schema.Advertisement) (ipld.Link, error) {
