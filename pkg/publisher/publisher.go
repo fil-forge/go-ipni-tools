@@ -2,6 +2,7 @@ package publisher
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"iter"
 
@@ -47,6 +48,64 @@ func (p *IPNIPublisher) Publish(ctx context.Context, providerInfo peer.AddrInfo,
 
 var _ Publisher = (*IPNIPublisher)(nil)
 
+// AdvertSpec is what one advertisement is generated from: the content it
+// announces, the context ID it is published under and the metadata it carries.
+type AdvertSpec struct {
+	ContextID string
+	Digests   iter.Seq[mh.Multihash]
+	Metadata  metadata.Metadata
+}
+
+// BatchPublisher publishes many advertisements under one commit.
+type BatchPublisher interface {
+	// PublishBatch generates one advertisement per spec and publishes them
+	// all under a single commit. See [IPNIPublisher.PublishBatch].
+	PublishBatch(ctx context.Context, provider peer.AddrInfo, specs []AdvertSpec) (ipld.Link, error)
+}
+
+// PublishBatch generates one advertisement per spec and publishes them all
+// under a single commit: one signed head and one announce however many specs
+// there are, where Publish pays both per advertisement. A spec whose content
+// is already advertised with identical metadata is skipped. The returned link
+// is the head after the commit, unchanged when every spec was skipped and nil
+// when nothing has ever been published.
+//
+// On failure, every mapping from provider and context ID that this call
+// wrote, the one being generated when it failed included, is put back to what
+// it was, so calling again with the same specs publishes every one of them.
+// Undoing a write can itself fail; the returned error then says which
+// mappings could not be restored, and those may differ from what the store
+// held before the call. Entries blocks are content addressed and are left in
+// place. Like Publish, PublishBatch is not safe for concurrent use.
+func (p *IPNIPublisher) PublishBatch(ctx context.Context, provider peer.AddrInfo, specs []AdvertSpec) (ipld.Link, error) {
+	for _, spec := range specs {
+		adv, undo, err := generateAd(ctx, p.store, provider.ID, provider.Addrs, []byte(spec.ContextID), spec.Metadata, false, spec.Digests)
+		if errors.Is(err, ErrAlreadyAdvertised) {
+			continue
+		}
+		if err != nil {
+			cctx, cancel := cleanupContext(ctx)
+			defer cancel()
+			errs := []error{fmt.Errorf("generating IPNI advert: %w", err)}
+			if undo != nil {
+				if uerr := undo(cctx); uerr != nil {
+					errs = append(errs, fmt.Errorf("rolling back the advert being generated: %w", uerr))
+				}
+			}
+			errs = append(errs, p.batchPublisher.Discard(cctx))
+			return nil, errors.Join(errs...)
+		}
+		p.batchPublisher.add(adv, undo)
+	}
+	link, err := p.batchPublisher.Commit(ctx)
+	if err != nil {
+		return nil, fmt.Errorf("committing IPNI adverts: %w", err)
+	}
+	return link, nil
+}
+
+var _ BatchPublisher = (*IPNIPublisher)(nil)
+
 // New creates a new IPNI publisher.
 // IPNIPublisher is not safe for concurrent use. There is the risk of losing advertisements if Publish is called
 // from concurrent goroutines. If you will be publishing from multiple goroutines concurrently, a synchronization
@@ -63,14 +122,20 @@ func New(id crypto.PrivKey, store store.PublisherStore, opts ...Option) (*IPNIPu
 }
 
 func (p *IPNIPublisher) publishAdvForIndex(ctx context.Context, peer peer.ID, addrs []multiaddr.Multiaddr, contextID []byte, md metadata.Metadata, isRm bool, mhs iter.Seq[mh.Multihash]) (ipld.Link, error) {
-
-	adv, err := GenerateAd(ctx, p.store, peer, addrs, contextID, md, isRm, mhs)
+	adv, undo, err := generateAd(ctx, p.store, peer, addrs, contextID, md, isRm, mhs)
 	if err != nil {
+		// These two report the store as it was found; nothing was written.
+		if errors.Is(err, ErrAlreadyAdvertised) || errors.Is(err, ErrContextIDNotFound) || undo == nil {
+			return nil, err
+		}
+		cctx, cancel := cleanupContext(ctx)
+		defer cancel()
+		if uerr := undo(cctx); uerr != nil {
+			return nil, errors.Join(err, fmt.Errorf("rolling back the advert being generated: %w", uerr))
+		}
 		return nil, err
 	}
-
-	p.batchPublisher.AddToBatch(adv)
-
+	p.batchPublisher.add(adv, undo)
 	return p.batchPublisher.Commit(ctx)
 }
 

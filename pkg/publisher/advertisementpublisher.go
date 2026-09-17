@@ -2,6 +2,7 @@ package publisher
 
 import (
 	"context"
+	"errors"
 	"fmt"
 
 	"github.com/ipld/go-ipld-prime"
@@ -16,12 +17,19 @@ import (
 	"github.com/fil-forge/go-ipni-tools/pkg/store"
 )
 
+// pendingAd is an advertisement awaiting commit, with the undo of the store
+// writes that generating it made, for when the commit fails.
+type pendingAd struct {
+	adv  schema.Advertisement
+	undo func(context.Context) error
+}
+
 type AdvertisementPublisher struct {
 	*options
-	pendingAds []schema.Advertisement
-	sender     announce.Sender
-	key        crypto.PrivKey
-	store      store.PublisherStore
+	pending []pendingAd
+	sender  announce.Sender
+	key     crypto.PrivKey
+	store   store.PublisherStore
 }
 
 func NewAdvertisementPublisher(id crypto.PrivKey, store store.PublisherStore, opts ...Option) (*AdvertisementPublisher, error) {
@@ -54,28 +62,79 @@ func NewAdvertisementPublisher(id crypto.PrivKey, store store.PublisherStore, op
 	return batchPublisher, nil
 }
 
+// AddToBatch queues an advertisement for the next Commit. Should that commit
+// fail, the mappings from the advertisement's provider and context ID to its
+// entries and to its metadata are dropped, so generating it again produces an
+// advertisement rather than [ErrAlreadyAdvertised]. That is all an
+// advertisement alone allows: a mapping it replaced is not recoverable, and a
+// removal's generation deleted the mappings a retry would need, so a failed
+// commit of a removal reports that. Publish and PublishBatch generate their
+// advertisements themselves and queue them with an exact undo instead.
 func (p *AdvertisementPublisher) AddToBatch(adv schema.Advertisement) error {
-	p.pendingAds = append(p.pendingAds, adv)
+	p.add(adv, forgetMappings(p.store, adv))
 	return nil
 }
 
+// add queues an advertisement with the undo that generating it recorded.
+func (p *AdvertisementPublisher) add(adv schema.Advertisement, undo func(context.Context) error) {
+	p.pending = append(p.pending, pendingAd{adv: adv, undo: undo})
+}
+
+// Commit publishes the pending advertisements under one new head and
+// announces it. Should it fail, the store writes generating them made are
+// undone, and any failure to undo is reported beside the commit's error: a
+// mapping left behind would make its content unpublishable on retry, so the
+// caller must know which ones could not be put back.
 func (p *AdvertisementPublisher) Commit(ctx context.Context) (ipld.Link, error) {
-	pendingAds := p.pendingAds
-	p.pendingAds = nil
-	lnk, err := p.commit(ctx, pendingAds)
+	pending := p.pending
+	p.pending = nil
+	advs := make([]schema.Advertisement, len(pending))
+	for i, pa := range pending {
+		advs[i] = pa.adv
+	}
+	lnk, err := p.commit(ctx, advs)
 	if err != nil {
-		for _, adv := range pendingAds {
-			if !adv.IsRm {
-				peer, err := peer.Decode(adv.Provider)
-				if err == nil {
-					_ = p.store.DeleteChunkLinkForProviderAndContextID(ctx, peer, adv.ContextID)
-				}
-			}
-		}
-		return nil, err
+		cctx, cancel := cleanupContext(ctx)
+		defer cancel()
+		return nil, errors.Join(err, undoAll(cctx, pending))
 	}
 	return lnk, nil
 }
+
+// Discard drops the pending advertisements without publishing them and undoes
+// the store writes generating them made, so generating the same
+// advertisements again produces them rather than [ErrAlreadyAdvertised]: what
+// was pending lived only in memory, and a store that still called it
+// advertised would make it unpublishable. It reports any undo that failed.
+func (p *AdvertisementPublisher) Discard(ctx context.Context) error {
+	pending := p.pending
+	p.pending = nil
+	cctx, cancel := cleanupContext(ctx)
+	defer cancel()
+	return undoAll(cctx, pending)
+}
+
+// undoAll runs the pending advertisements' undos newest first. Each undo
+// restores the state from just before its own advertisement was generated,
+// so when two advertisements in a batch share a context ID the later one
+// must be undone first, or it would put the earlier one's mapping back.
+func undoAll(ctx context.Context, pending []pendingAd) error {
+	var errs []error
+	for i := len(pending) - 1; i >= 0; i-- {
+		pa := pending[i]
+		if pa.undo == nil {
+			continue
+		}
+		if err := pa.undo(ctx); err != nil {
+			errs = append(errs, fmt.Errorf("undoing advertisement for context %x: %w", pa.adv.ContextID, err))
+		}
+	}
+	if len(errs) == 0 {
+		return nil
+	}
+	return fmt.Errorf("rolling back %d of %d pending advertisements failed: %w", len(errs), len(pending), errors.Join(errs...))
+}
+
 func (p *AdvertisementPublisher) commit(ctx context.Context, pendingAds []schema.Advertisement) (ipld.Link, error) {
 
 	// Get the previous advertisement that was generated.
