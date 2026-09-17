@@ -50,13 +50,16 @@ func restoreMappings(s store.PublisherStore, p peer.ID, contextID []byte, prevCh
 	}
 }
 
-// forgetChunkLink is the undo for an advertisement queued through AddToBatch,
-// whose generation was not observed: it drops the mapping from provider and
-// context ID to entries, so generating the advertisement again produces it
-// rather than ErrAlreadyAdvertised. A removal's generation deleted the
-// mappings, and the advertisement carries nothing to restore them from, so
-// its undo reports that rather than pretending the store is as it was.
-func forgetChunkLink(s store.PublisherStore, adv schema.Advertisement) func(context.Context) error {
+// forgetMappings is the undo for an advertisement queued through AddToBatch,
+// whose generation was not observed. Generating an addition wrote the
+// mappings from provider and context ID to entries and to metadata; both are
+// dropped, so generating the advertisement again produces it rather than
+// ErrAlreadyAdvertised, and a store that keeps one mapping without the other
+// is never left behind. A prior mapping the advertisement replaced is not
+// recoverable from the advertisement alone. A removal's generation deleted
+// the mappings, and nothing here can restore them, so its undo reports that
+// rather than pretending the store is as it was.
+func forgetMappings(s store.PublisherStore, adv schema.Advertisement) func(context.Context) error {
 	return func(ctx context.Context) error {
 		if adv.IsRm {
 			return fmt.Errorf("removal advertisement: the mappings its generation deleted cannot be restored from the advertisement; retrying reports %w", ErrContextIDNotFound)
@@ -65,9 +68,13 @@ func forgetChunkLink(s store.PublisherStore, adv schema.Advertisement) func(cont
 		if err != nil {
 			return fmt.Errorf("decoding advertisement provider: %w", err)
 		}
+		var errs []error
 		if err := s.DeleteChunkLinkForProviderAndContextID(ctx, p, adv.ContextID); err != nil && !store.IsNotFound(err) {
-			return fmt.Errorf("removing entries mapping: %w", err)
+			errs = append(errs, fmt.Errorf("removing entries mapping: %w", err))
 		}
-		return nil
+		if err := s.DeleteMetadataForProviderAndContextID(ctx, p, adv.ContextID); err != nil && !store.IsNotFound(err) {
+			errs = append(errs, fmt.Errorf("removing metadata mapping: %w", err))
+		}
+		return errors.Join(errs...)
 	}
 }

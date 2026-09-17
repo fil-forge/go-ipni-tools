@@ -63,15 +63,15 @@ func NewAdvertisementPublisher(id crypto.PrivKey, store store.PublisherStore, op
 }
 
 // AddToBatch queues an advertisement for the next Commit. Should that commit
-// fail, the mapping from the advertisement's provider and context ID to its
-// entries is dropped, so generating it again produces an advertisement rather
-// than [ErrAlreadyAdvertised]. That is all an advertisement alone allows: a
-// removal's generation deleted the mappings the retry would need, and they
-// cannot be recovered here, so a failed commit of a removal reports that.
-// Publish and PublishBatch generate their advertisements themselves and
-// queue them with an exact undo instead.
+// fail, the mappings from the advertisement's provider and context ID to its
+// entries and to its metadata are dropped, so generating it again produces an
+// advertisement rather than [ErrAlreadyAdvertised]. That is all an
+// advertisement alone allows: a mapping it replaced is not recoverable, and a
+// removal's generation deleted the mappings a retry would need, so a failed
+// commit of a removal reports that. Publish and PublishBatch generate their
+// advertisements themselves and queue them with an exact undo instead.
 func (p *AdvertisementPublisher) AddToBatch(adv schema.Advertisement) error {
-	p.add(adv, forgetChunkLink(p.store, adv))
+	p.add(adv, forgetMappings(p.store, adv))
 	return nil
 }
 
@@ -83,7 +83,8 @@ func (p *AdvertisementPublisher) add(adv schema.Advertisement, undo func(context
 // Commit publishes the pending advertisements under one new head and
 // announces it. Should it fail, the store writes generating them made are
 // undone, and any failure to undo is reported beside the commit's error: a
-// mapping left behind would make its content unpublishable on retry.
+// mapping left behind would make its content unpublishable on retry, so the
+// caller must know which ones could not be put back.
 func (p *AdvertisementPublisher) Commit(ctx context.Context) (ipld.Link, error) {
 	pending := p.pending
 	p.pending = nil

@@ -70,10 +70,12 @@ type BatchPublisher interface {
 // is the head after the commit, unchanged when every spec was skipped and nil
 // when nothing has ever been published.
 //
-// A failure leaves no mapping behind: every mapping from provider and context
-// ID that this call wrote, the one being generated when it failed included,
-// goes back to what it was, so calling again with the same specs publishes
-// every one of them. Entries blocks are content addressed and are left in
+// On failure, every mapping from provider and context ID that this call
+// wrote, the one being generated when it failed included, is put back to what
+// it was, so calling again with the same specs publishes every one of them.
+// Undoing a write can itself fail; the returned error then says which
+// mappings could not be restored, and those may differ from what the store
+// held before the call. Entries blocks are content addressed and are left in
 // place. Like Publish, PublishBatch is not safe for concurrent use.
 func (p *IPNIPublisher) PublishBatch(ctx context.Context, provider peer.AddrInfo, specs []AdvertSpec) (ipld.Link, error) {
 	for _, spec := range specs {

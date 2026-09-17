@@ -505,3 +505,35 @@ func TestAddToBatchRemovalCommitFailureIsReported(t *testing.T) {
 	require.ErrorContains(t, err, errInjected.Error(), "the commit failure is reported")
 	require.ErrorIs(t, err, publisher.ErrContextIDNotFound, "and so is what a retry of the removal will meet")
 }
+
+// TestAddToBatchCommitFailureDropsBothMappings pins the state-free undo behind
+// AddToBatch for an addition: generation wrote the entries and the metadata
+// mapping, and a failed commit drops both, so the store never keeps one
+// without the other and a retry regenerates the advertisement.
+func TestAddToBatchCommitFailureDropsBothMappings(t *testing.T) {
+	priv, _, err := crypto.GenerateEd25519Key(nil)
+	require.NoError(t, err)
+	pid, err := peer.IDFromPrivateKey(priv)
+	require.NoError(t, err)
+	ctx := context.Background()
+
+	st := batchStore()
+	spec := batchSpecs(t, 1)[0]
+	adv, err := publisher.GenerateAd(ctx, st, pid, nil, []byte(spec.ContextID), spec.Metadata, false, spec.Digests)
+	require.NoError(t, err)
+
+	failing := &failingHeadStore{PublisherStore: st, failNext: true}
+	bp, err := publisher.NewAdvertisementPublisher(priv, failing)
+	require.NoError(t, err)
+	require.NoError(t, bp.AddToBatch(adv))
+	_, err = bp.Commit(ctx)
+	require.ErrorContains(t, err, errInjected.Error())
+	requireUnmapped(t, ctx, st, pid, spec.ContextID, "the addition whose commit failed")
+
+	// The retry regenerates and commits it.
+	adv, err = publisher.GenerateAd(ctx, st, pid, nil, []byte(spec.ContextID), spec.Metadata, false, spec.Digests)
+	require.NoError(t, err, "the content is not reported as already advertised")
+	require.NoError(t, bp.AddToBatch(adv))
+	_, err = bp.Commit(ctx)
+	require.NoError(t, err)
+}
