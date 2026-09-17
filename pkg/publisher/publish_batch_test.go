@@ -13,6 +13,7 @@ import (
 	"github.com/ipfs/go-datastore"
 	dssync "github.com/ipfs/go-datastore/sync"
 	"github.com/ipld/go-ipld-prime"
+	"github.com/ipni/go-libipni/dagsync/ipnisync/head"
 	ipnimeta "github.com/ipni/go-libipni/metadata"
 	"github.com/libp2p/go-libp2p/core/crypto"
 	"github.com/libp2p/go-libp2p/core/peer"
@@ -147,6 +148,11 @@ func TestPublishBatch(t *testing.T) {
 		require.ErrorContains(t, err, errInjected.Error())
 		stored, err := st.Head(ctx)
 		require.True(t, err != nil || stored == nil, "a failed batch must not move the head")
+		// No mapping survives, the spec that was being generated included:
+		// its entries mapping was written before its metadata write failed.
+		for i, spec := range specs {
+			requireUnmapped(t, ctx, st, pid, spec.ContextID, fmt.Sprintf("spec %d", i))
+		}
 
 		// A fresh publisher over the same store, as after a restart: the
 		// adverts generated before the failure lived only in memory, so the
@@ -175,4 +181,99 @@ func (f *failingMetadataStore) PutMetadataForProviderAndContextID(ctx context.Co
 		return fmt.Errorf("metadata write %d: %w", f.calls, errInjected)
 	}
 	return f.PublisherStore.PutMetadataForProviderAndContextID(ctx, p, contextID, md)
+}
+
+// requireUnmapped asserts the store maps nothing to the provider and context
+// ID: neither entries nor metadata.
+func requireUnmapped(t *testing.T, ctx context.Context, st store.PublisherStore, pid peer.ID, contextID, what string) {
+	t.Helper()
+	_, err := st.ChunkLinkForProviderAndContextID(ctx, pid, []byte(contextID))
+	require.True(t, store.IsNotFound(err), "%s: entries mapping left behind (err=%v)", what, err)
+	_, err = st.MetadataForProviderAndContextID(ctx, pid, []byte(contextID))
+	require.True(t, store.IsNotFound(err), "%s: metadata mapping left behind (err=%v)", what, err)
+}
+
+func TestPublishBatchRollback(t *testing.T) {
+	priv, _, err := crypto.GenerateEd25519Key(nil)
+	require.NoError(t, err)
+	pid, err := peer.IDFromPrivateKey(priv)
+	require.NoError(t, err)
+	provInfo := peer.AddrInfo{ID: pid}
+	ctx := context.Background()
+
+	t.Run("a failed re-advertisement keeps the existing mapping", func(t *testing.T) {
+		st := batchStore()
+		failing := &failingMetadataStore{PublisherStore: st}
+		p, err := publisher.New(priv, failing)
+		require.NoError(t, err)
+
+		// Content already advertised under metadata M1.
+		specs := batchSpecs(t, 2)
+		first, err := p.PublishBatch(ctx, provInfo, specs[:1])
+		require.NoError(t, err)
+		chunkBefore, err := st.ChunkLinkForProviderAndContextID(ctx, pid, []byte(specs[0].ContextID))
+		require.NoError(t, err)
+		metaBefore := specs[0].Metadata
+
+		// The same content again under new metadata, beside a spec whose
+		// metadata write fails: the first metadata write of this batch
+		// re-advertises, the second (the new spec's) fails.
+		readvertised := specs[0]
+		readvertised.Metadata = metadata.MetadataContext.New(&metadata.LocationCommitmentMetadata{Claim: testutil.RandomCID(t)})
+		failing.failOn = failing.calls + 2
+		_, err = p.PublishBatch(ctx, provInfo, []publisher.AdvertSpec{readvertised, specs[1]})
+		require.ErrorContains(t, err, errInjected.Error())
+
+		// The pre-existing mapping is back as it was: same entries, metadata M1.
+		chunkAfter, err := st.ChunkLinkForProviderAndContextID(ctx, pid, []byte(specs[0].ContextID))
+		require.NoError(t, err)
+		require.Equal(t, chunkBefore, chunkAfter, "a failed re-advertisement must not drop the existing entries mapping")
+		metaAfter, err := st.MetadataForProviderAndContextID(ctx, pid, []byte(specs[0].ContextID))
+		require.NoError(t, err)
+		require.True(t, metaBefore.Equal(metaAfter), "a failed re-advertisement must restore the previous metadata")
+		requireUnmapped(t, ctx, st, pid, specs[1].ContextID, "the new spec")
+		stored, err := st.Head(ctx)
+		require.NoError(t, err)
+		require.Equal(t, first, stored.Head, "the head is where the first batch left it")
+
+		// A retry publishes the re-advertisement and the new spec: three
+		// adverts on the chain.
+		failing.failOn = 0
+		head, err := p.PublishBatch(ctx, provInfo, []publisher.AdvertSpec{readvertised, specs[1]})
+		require.NoError(t, err)
+		require.Len(t, chainFrom(t, ctx, st, head), 3)
+	})
+
+	t.Run("a failed commit rolls the batch back", func(t *testing.T) {
+		st := batchStore()
+		failing := &failingHeadStore{PublisherStore: st, failNext: true}
+		p, err := publisher.New(priv, failing)
+		require.NoError(t, err)
+
+		specs := batchSpecs(t, 4)
+		_, err = p.PublishBatch(ctx, provInfo, specs)
+		require.ErrorContains(t, err, errInjected.Error())
+		for i, spec := range specs {
+			requireUnmapped(t, ctx, st, pid, spec.ContextID, fmt.Sprintf("spec %d", i))
+		}
+
+		head, err := p.PublishBatch(ctx, provInfo, specs)
+		require.NoError(t, err)
+		require.Len(t, chainFrom(t, ctx, st, head), 4, "every spec of the failed batch publishes on retry")
+	})
+}
+
+// failingHeadStore fails the next head replacement, which is the commit's
+// last store write before the announce.
+type failingHeadStore struct {
+	store.PublisherStore
+	failNext bool
+}
+
+func (f *failingHeadStore) ReplaceHead(ctx context.Context, oldHead, newHead *head.SignedHead) (ipld.Link, error) {
+	if f.failNext {
+		f.failNext = false
+		return nil, fmt.Errorf("replace head: %w", errInjected)
+	}
+	return f.PublisherStore.ReplaceHead(ctx, oldHead, newHead)
 }

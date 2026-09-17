@@ -70,24 +70,25 @@ type BatchPublisher interface {
 // is the head after the commit, unchanged when every spec was skipped and nil
 // when nothing has ever been published.
 //
-// A failure leaves nothing behind. The advertisements generated so far are
-// discarded together with the store entries that would otherwise make a retry
-// skip them, so calling again with the same specs publishes every one of
-// them. Like Publish, PublishBatch is not safe for concurrent use.
+// A failure leaves no mapping behind: every mapping from provider and context
+// ID that this call wrote, the one being generated when it failed included,
+// goes back to what it was, so calling again with the same specs publishes
+// every one of them. Entries blocks are content addressed and are left in
+// place. Like Publish, PublishBatch is not safe for concurrent use.
 func (p *IPNIPublisher) PublishBatch(ctx context.Context, provider peer.AddrInfo, specs []AdvertSpec) (ipld.Link, error) {
 	for _, spec := range specs {
-		adv, err := GenerateAd(ctx, p.store, provider.ID, provider.Addrs, []byte(spec.ContextID), spec.Metadata, false, spec.Digests)
+		adv, undo, err := generateAd(ctx, p.store, provider.ID, provider.Addrs, []byte(spec.ContextID), spec.Metadata, spec.Digests)
 		if errors.Is(err, ErrAlreadyAdvertised) {
 			continue
 		}
 		if err != nil {
+			if undo != nil {
+				undo(ctx)
+			}
 			p.batchPublisher.Discard(ctx)
 			return nil, fmt.Errorf("generating IPNI advert: %w", err)
 		}
-		if err := p.batchPublisher.AddToBatch(adv); err != nil {
-			p.batchPublisher.Discard(ctx)
-			return nil, fmt.Errorf("batching IPNI advert: %w", err)
-		}
+		p.batchPublisher.add(adv, undo)
 	}
 	link, err := p.batchPublisher.Commit(ctx)
 	if err != nil {
@@ -114,14 +115,23 @@ func New(id crypto.PrivKey, store store.PublisherStore, opts ...Option) (*IPNIPu
 }
 
 func (p *IPNIPublisher) publishAdvForIndex(ctx context.Context, peer peer.ID, addrs []multiaddr.Multiaddr, contextID []byte, md metadata.Metadata, isRm bool, mhs iter.Seq[mh.Multihash]) (ipld.Link, error) {
-
-	adv, err := GenerateAd(ctx, p.store, peer, addrs, contextID, md, isRm, mhs)
-	if err != nil {
-		return nil, err
+	if isRm {
+		adv, err := GenerateAd(ctx, p.store, peer, addrs, contextID, md, isRm, mhs)
+		if err != nil {
+			return nil, err
+		}
+		p.batchPublisher.AddToBatch(adv)
+		return p.batchPublisher.Commit(ctx)
 	}
 
-	p.batchPublisher.AddToBatch(adv)
-
+	adv, undo, err := generateAd(ctx, p.store, peer, addrs, contextID, md, mhs)
+	if err != nil {
+		if undo != nil && !errors.Is(err, ErrAlreadyAdvertised) {
+			undo(ctx)
+		}
+		return nil, err
+	}
+	p.batchPublisher.add(adv, undo)
 	return p.batchPublisher.Commit(ctx)
 }
 

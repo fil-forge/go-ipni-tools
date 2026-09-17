@@ -16,12 +16,19 @@ import (
 	"github.com/fil-forge/go-ipni-tools/pkg/store"
 )
 
+// pendingAd is an advertisement awaiting commit, with the undo of the store
+// writes that generating it made, for when the commit fails.
+type pendingAd struct {
+	adv  schema.Advertisement
+	undo func(context.Context)
+}
+
 type AdvertisementPublisher struct {
 	*options
-	pendingAds []schema.Advertisement
-	sender     announce.Sender
-	key        crypto.PrivKey
-	store      store.PublisherStore
+	pending []pendingAd
+	sender  announce.Sender
+	key     crypto.PrivKey
+	store   store.PublisherStore
 }
 
 func NewAdvertisementPublisher(id crypto.PrivKey, store store.PublisherStore, opts ...Option) (*AdvertisementPublisher, error) {
@@ -54,47 +61,55 @@ func NewAdvertisementPublisher(id crypto.PrivKey, store store.PublisherStore, op
 	return batchPublisher, nil
 }
 
+// AddToBatch queues an advertisement for the next Commit. Should that commit
+// fail, the mapping from the advertisement's provider and context ID to its
+// entries is dropped, so generating it again produces an advertisement rather
+// than [ErrAlreadyAdvertised]. Publish and PublishBatch generate their
+// advertisements themselves and queue them with an exact undo instead.
 func (p *AdvertisementPublisher) AddToBatch(adv schema.Advertisement) error {
-	p.pendingAds = append(p.pendingAds, adv)
+	p.add(adv, forgetChunkLink(p.store, adv))
 	return nil
 }
 
+// add queues an advertisement with the undo that generating it recorded.
+func (p *AdvertisementPublisher) add(adv schema.Advertisement, undo func(context.Context)) {
+	p.pending = append(p.pending, pendingAd{adv: adv, undo: undo})
+}
+
 func (p *AdvertisementPublisher) Commit(ctx context.Context) (ipld.Link, error) {
-	pendingAds := p.pendingAds
-	p.pendingAds = nil
-	lnk, err := p.commit(ctx, pendingAds)
+	pending := p.pending
+	p.pending = nil
+	advs := make([]schema.Advertisement, len(pending))
+	for i, pa := range pending {
+		advs[i] = pa.adv
+	}
+	lnk, err := p.commit(ctx, advs)
 	if err != nil {
-		p.forget(ctx, pendingAds)
+		undoAll(ctx, pending)
 		return nil, err
 	}
 	return lnk, nil
 }
 
-// Discard drops the pending advertisements without publishing them. The
-// store entries that mark their content as advertised go too, so generating
-// the same advertisements again produces them rather than
-// [ErrAlreadyAdvertised]: what was pending lived only in memory, and a store
-// that still called it advertised would make it unpublishable.
+// Discard drops the pending advertisements without publishing them and undoes
+// the store writes generating them made, so generating the same
+// advertisements again produces them rather than [ErrAlreadyAdvertised]: what
+// was pending lived only in memory, and a store that still called it
+// advertised would make it unpublishable.
 func (p *AdvertisementPublisher) Discard(ctx context.Context) {
-	pendingAds := p.pendingAds
-	p.pendingAds = nil
-	p.forget(ctx, pendingAds)
+	pending := p.pending
+	p.pending = nil
+	undoAll(ctx, pending)
 }
 
-// forget removes the chunk links generated for advertisements that will not
-// be published, which is what GenerateAd checks to decide whether content is
-// already advertised.
-func (p *AdvertisementPublisher) forget(ctx context.Context, advs []schema.Advertisement) {
-	for _, adv := range advs {
-		if adv.IsRm {
-			continue
-		}
-		peer, err := peer.Decode(adv.Provider)
-		if err == nil {
-			_ = p.store.DeleteChunkLinkForProviderAndContextID(ctx, peer, adv.ContextID)
+func undoAll(ctx context.Context, pending []pendingAd) {
+	for _, pa := range pending {
+		if pa.undo != nil {
+			pa.undo(ctx)
 		}
 	}
 }
+
 func (p *AdvertisementPublisher) commit(ctx context.Context, pendingAds []schema.Advertisement) (ipld.Link, error) {
 
 	// Get the previous advertisement that was generated.
