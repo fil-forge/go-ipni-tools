@@ -13,6 +13,7 @@ type options struct {
 	pubHTTPAnnounceAddrs []multiaddr.Multiaddr
 	topic                string
 	announceURLs         []*url.URL
+	transactional        bool
 }
 
 // WithDirectAnnounce sets indexer URLs to send direct HTTP announcements to.
@@ -42,6 +43,18 @@ func WithAnnounceAddrs(addrs ...string) Option {
 				opts.pubHTTPAnnounceAddrs = append(opts.pubHTTPAnnounceAddrs, maddr)
 			}
 		}
+		return nil
+	}
+}
+
+// WithTransactionalStore tells the publisher that the caller runs each
+// publish in a transaction over the store and rolls it back when publishing
+// fails. The publisher then leaves undoing its store writes to that rollback:
+// an undo issued inside a transaction the database has already aborted would
+// fail, and its error would hide the cause.
+func WithTransactionalStore() Option {
+	return func(opts *options) error {
+		opts.transactional = true
 		return nil
 	}
 }
