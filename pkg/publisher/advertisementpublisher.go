@@ -90,13 +90,18 @@ func (p *AdvertisementPublisher) add(adv schema.Advertisement, undo func(context
 // mapping left behind would make its content unpublishable on retry, so the
 // caller must know which ones could not be put back.
 func (p *AdvertisementPublisher) Commit(ctx context.Context) (ipld.Link, error) {
+	return p.commitTo(ctx, p.store)
+}
+
+// commitTo is Commit against the given store.
+func (p *AdvertisementPublisher) commitTo(ctx context.Context, st store.PublisherStore) (ipld.Link, error) {
 	pending := p.pending
 	p.pending = nil
 	advs := make([]schema.Advertisement, len(pending))
 	for i, pa := range pending {
 		advs[i] = pa.adv
 	}
-	lnk, err := p.commit(ctx, advs)
+	lnk, err := p.commit(ctx, st, advs)
 	if err != nil {
 		cctx, cancel := cleanupContext(ctx)
 		defer cancel()
@@ -139,10 +144,10 @@ func undoAll(ctx context.Context, pending []pendingAd) error {
 	return fmt.Errorf("rolling back %d of %d pending advertisements failed: %w", len(errs), len(pending), errors.Join(errs...))
 }
 
-func (p *AdvertisementPublisher) commit(ctx context.Context, pendingAds []schema.Advertisement) (ipld.Link, error) {
+func (p *AdvertisementPublisher) commit(ctx context.Context, st store.PublisherStore, pendingAds []schema.Advertisement) (ipld.Link, error) {
 
 	// Get the previous advertisement that was generated.
-	prevHead, err := p.store.Head(ctx)
+	prevHead, err := st.Head(ctx)
 	if err != nil {
 		if !store.IsNotFound(err) {
 			return nil, fmt.Errorf("could not get latest advertisement: %s", err)
@@ -175,7 +180,7 @@ func (p *AdvertisementPublisher) commit(ctx context.Context, pendingAds []schema
 			return nil, err
 		}
 
-		lnk, err := p.store.PutAdvert(ctx, adv)
+		lnk, err := st.PutAdvert(ctx, adv)
 		if err != nil {
 			return nil, err
 		}
@@ -189,7 +194,7 @@ func (p *AdvertisementPublisher) commit(ctx context.Context, pendingAds []schema
 		log.Errorw("Failed to generate signed head for the latest advertisement", "err", err)
 		return nil, fmt.Errorf("failed to generate signed head for the latest advertisement: %w", err)
 	}
-	if _, err := p.store.ReplaceHead(ctx, prevHead, head); err != nil {
+	if _, err := st.ReplaceHead(ctx, prevHead, head); err != nil {
 		log.Errorw("Failed to update reference to the latest advertisement", "err", err)
 		return nil, fmt.Errorf("failed to update reference to latest advertisement: %w", err)
 	}
