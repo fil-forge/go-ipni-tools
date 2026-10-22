@@ -104,23 +104,10 @@ func TestPublishBatchOnBatchStore(t *testing.T) {
 		require.True(t, spec.Metadata.Equal(got), "the metadata advertised before is back")
 	})
 
-	t.Run("a transactional store keeps the failed batch's mappings", func(t *testing.T) {
-		bs := newBatchingStore()
-		bs.blocks.failReplace = true
-		st := bs.publisherStore()
-		p, err := publisher.New(priv, st, publisher.WithTransactionalStore())
-		require.NoError(t, err)
-		spec := batchSpecs(t, 1)[0]
-		_, err = p.PublishBatch(ctx, provInfo, []publisher.AdvertSpec{spec})
-		require.ErrorIs(t, err, errInjected)
-		_, err = st.ChunkLinkForProviderAndContextID(ctx, pid, []byte(spec.ContextID))
-		require.NoError(t, err, "the caller's rollback undoes it")
-	})
-
 	t.Run("a failed block write leaves the mappings unwritten", func(t *testing.T) {
 		bs := newBatchingStore()
 		bs.blocks.failPutMany = true
-		p, err := publisher.New(priv, bs.publisherStore(), publisher.WithTransactionalStore())
+		p, err := publisher.New(priv, bs.publisherStore())
 		require.NoError(t, err)
 		_, err = p.PublishBatch(ctx, provInfo, batchSpecs(t, 2))
 		require.ErrorIs(t, err, errInjected)

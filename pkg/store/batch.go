@@ -52,9 +52,8 @@ type BatchProviderContextTable interface {
 //
 // When moving the head fails after the mappings were written, the batch
 // writes the mappings it replaced back, so publishing the same content
-// again is not reported as already advertised; a store whose writes roll
-// back with the caller's transaction can turn that off. Blocks are content
-// addressed and stay.
+// again is not reported as already advertised. Blocks are content addressed
+// and stay.
 type Batch struct {
 	*AdStore
 	blocks     *batchBlocks
@@ -63,9 +62,8 @@ type Batch struct {
 }
 
 // NewBatch returns a Batch over the store, and false when its block store or
-// either of its tables cannot work in batches. With restoreOnFailure, a
-// failed head move writes back the mappings the batch replaced.
-func (s *AdStore) NewBatch(restoreOnFailure bool) (*Batch, bool) {
+// either of its tables cannot work in batches.
+func (s *AdStore) NewBatch() (*Batch, bool) {
 	blocks, ok := s.store.(BatchStore)
 	if !ok {
 		return nil, false
@@ -83,10 +81,9 @@ func (s *AdStore) NewBatch(restoreOnFailure bool) (*Batch, bool) {
 		metadata:   newBatchTable(metadataTable),
 	}
 	b.blocks = &batchBlocks{
-		under:            blocks,
-		pending:          map[string][]byte{},
-		tables:           []*batchTable{b.chunkLinks, b.metadata},
-		restoreOnFailure: restoreOnFailure,
+		under:   blocks,
+		pending: map[string][]byte{},
+		tables:  []*batchTable{b.chunkLinks, b.metadata},
 	}
 	b.AdStore = &AdStore{
 		store:           b.blocks,
@@ -100,7 +97,7 @@ func (s *AdStore) NewBatch(restoreOnFailure bool) (*Batch, bool) {
 
 // Batcher is implemented by a store that can publish in batches.
 type Batcher interface {
-	NewBatch(restoreOnFailure bool) (*Batch, bool)
+	NewBatch() (*Batch, bool)
 }
 
 var _ Batcher = (*AdStore)(nil)
@@ -119,11 +116,10 @@ func (b *Batch) Prefetch(ctx context.Context, p peer.ID, contextIDs [][]byte) er
 
 // batchBlocks holds block writes until the head is replaced.
 type batchBlocks struct {
-	under            BatchStore
-	pending          map[string][]byte
-	order            []string
-	tables           []*batchTable
-	restoreOnFailure bool
+	under   BatchStore
+	pending map[string][]byte
+	order   []string
+	tables  []*batchTable
 }
 
 func (s *batchBlocks) Get(ctx context.Context, key string) (io.ReadCloser, error) {
@@ -156,9 +152,6 @@ func (s *batchBlocks) Replace(ctx context.Context, key string, old io.Reader, si
 		if err == nil {
 			return nil
 		}
-	}
-	if !s.restoreOnFailure {
-		return err
 	}
 	cctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), rollbackTimeout)
 	defer cancel()

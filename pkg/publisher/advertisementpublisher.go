@@ -71,10 +71,6 @@ func NewAdvertisementPublisher(id crypto.PrivKey, store store.PublisherStore, op
 // commit of a removal reports that. Publish and PublishBatch generate their
 // advertisements themselves and queue them with an exact undo instead.
 func (p *AdvertisementPublisher) AddToBatch(adv schema.Advertisement) error {
-	if p.transactional {
-		p.add(adv, nil)
-		return nil
-	}
 	p.add(adv, forgetMappings(p.store, adv))
 	return nil
 }

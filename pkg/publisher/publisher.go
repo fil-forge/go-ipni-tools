@@ -8,7 +8,6 @@ import (
 
 	logging "github.com/ipfs/go-log/v2"
 	"github.com/ipld/go-ipld-prime"
-	"github.com/ipni/go-libipni/ingest/schema"
 	"github.com/ipni/go-libipni/metadata"
 	"github.com/libp2p/go-libp2p/core/crypto"
 	"github.com/libp2p/go-libp2p/core/peer"
@@ -88,7 +87,7 @@ func (p *IPNIPublisher) PublishBatch(ctx context.Context, provider peer.AddrInfo
 		return nil, err
 	}
 	for _, spec := range specs {
-		adv, undo, err := p.generateAdIn(ctx, st, provider.ID, provider.Addrs, []byte(spec.ContextID), spec.Metadata, false, spec.Digests)
+		adv, undo, err := generateAd(ctx, st, provider.ID, provider.Addrs, []byte(spec.ContextID), spec.Metadata, false, spec.Digests)
 		if errors.Is(err, ErrAlreadyAdvertised) {
 			continue
 		}
@@ -121,7 +120,7 @@ func (p *IPNIPublisher) batchStore(ctx context.Context, provider peer.ID, specs 
 	if !ok {
 		return p.store, nil
 	}
-	batch, ok := batcher.NewBatch(!p.batchPublisher.transactional)
+	batch, ok := batcher.NewBatch()
 	if !ok {
 		return p.store, nil
 	}
@@ -153,7 +152,7 @@ func New(id crypto.PrivKey, store store.PublisherStore, opts ...Option) (*IPNIPu
 }
 
 func (p *IPNIPublisher) publishAdvForIndex(ctx context.Context, peer peer.ID, addrs []multiaddr.Multiaddr, contextID []byte, md metadata.Metadata, isRm bool, mhs iter.Seq[mh.Multihash]) (ipld.Link, error) {
-	adv, undo, err := p.generateAd(ctx, peer, addrs, contextID, md, isRm, mhs)
+	adv, undo, err := generateAd(ctx, p.store, peer, addrs, contextID, md, isRm, mhs)
 	if err != nil {
 		// These two report the store as it was found; nothing was written.
 		if errors.Is(err, ErrAlreadyAdvertised) || errors.Is(err, ErrContextIDNotFound) || undo == nil {
@@ -168,22 +167,6 @@ func (p *IPNIPublisher) publishAdvForIndex(ctx context.Context, peer peer.ID, ad
 	}
 	p.batchPublisher.add(adv, undo)
 	return p.batchPublisher.Commit(ctx)
-}
-
-// generateAd generates an advertisement against the publisher's store. With
-// [WithTransactionalStore] it returns no undo, since the caller's rollback
-// undoes the store writes.
-func (p *IPNIPublisher) generateAd(ctx context.Context, peer peer.ID, addrs []multiaddr.Multiaddr, contextID []byte, md metadata.Metadata, isRm bool, mhs iter.Seq[mh.Multihash]) (schema.Advertisement, func(context.Context) error, error) {
-	return p.generateAdIn(ctx, p.store, peer, addrs, contextID, md, isRm, mhs)
-}
-
-// generateAdIn is generateAd against the given store.
-func (p *IPNIPublisher) generateAdIn(ctx context.Context, st store.PublisherStore, peer peer.ID, addrs []multiaddr.Multiaddr, contextID []byte, md metadata.Metadata, isRm bool, mhs iter.Seq[mh.Multihash]) (schema.Advertisement, func(context.Context) error, error) {
-	adv, undo, err := generateAd(ctx, st, peer, addrs, contextID, md, isRm, mhs)
-	if p.batchPublisher.transactional {
-		undo = nil
-	}
-	return adv, undo, err
 }
 
 type simpleAsyncPublisher struct {

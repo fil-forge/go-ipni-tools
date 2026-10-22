@@ -537,24 +537,3 @@ func TestAddToBatchCommitFailureDropsBothMappings(t *testing.T) {
 	_, err = bp.Commit(ctx)
 	require.NoError(t, err)
 }
-
-// With a transactional store the caller's rollback undoes the mappings, so
-// the publisher leaves them as the failed batch wrote them.
-func TestPublishBatchTransactionalStoreLeavesUndoToCaller(t *testing.T) {
-	priv, _, err := crypto.GenerateEd25519Key(nil)
-	require.NoError(t, err)
-	pid, err := peer.IDFromPrivateKey(priv)
-	require.NoError(t, err)
-	ctx := context.Background()
-
-	st := batchStore()
-	failing := &failingHeadStore{PublisherStore: st, failNext: true}
-	p, err := publisher.New(priv, failing, publisher.WithTransactionalStore())
-	require.NoError(t, err)
-
-	spec := batchSpecs(t, 1)[0]
-	_, err = p.PublishBatch(ctx, peer.AddrInfo{ID: pid}, []publisher.AdvertSpec{spec})
-	require.ErrorContains(t, err, errInjected.Error())
-	_, err = st.ChunkLinkForProviderAndContextID(ctx, pid, []byte(spec.ContextID))
-	require.NoError(t, err, "the entries mapping the batch wrote is still there")
-}
