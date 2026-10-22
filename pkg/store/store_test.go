@@ -11,6 +11,7 @@ import (
 
 	"github.com/ipfs/go-cid"
 	"github.com/ipfs/go-datastore"
+	dsq "github.com/ipfs/go-datastore/query"
 	"github.com/ipld/go-ipld-prime"
 	"github.com/ipld/go-ipld-prime/codec/dagcbor"
 	"github.com/ipld/go-ipld-prime/codec/dagjson"
@@ -317,4 +318,71 @@ func encodeBlock(t *testing.T, chunk *libschema.EntryChunk, codec multicodec.Cod
 	mh, err := multihash.Sum(data, multihash.SHA2_256, -1)
 	require.NoError(t, err)
 	return cidlink.Link{Cid: cid.NewCidV1(uint64(codec), mh)}, data
+}
+
+func TestIdentityEntries(t *testing.T) {
+	ctx := context.Background()
+
+	t.Run("one multihash is inlined into an identity CID", func(t *testing.T) {
+		ds := datastore.NewMapDatastore()
+		s := store.FromDatastore(ds, store.WithIdentityEntries())
+		lnk, err := s.PutEntries(ctx, slices.Values(testutil.RandomMultihashes(t, 1)))
+		require.NoError(t, err)
+		require.Equal(t, uint64(multihash.IDENTITY), lnk.(cidlink.Link).Cid.Prefix().MhType)
+	})
+
+	t.Run("an inlined chunk writes nothing", func(t *testing.T) {
+		ds := datastore.NewMapDatastore()
+		s := store.FromDatastore(ds, store.WithIdentityEntries())
+		_, err := s.PutEntries(ctx, slices.Values(testutil.RandomMultihashes(t, 1)))
+		require.NoError(t, err)
+		require.Equal(t, 0, countKeys(t, ctx, ds))
+	})
+
+	t.Run("an inlined chunk reads back", func(t *testing.T) {
+		s := store.FromDatastore(datastore.NewMapDatastore(), store.WithIdentityEntries())
+		mhs := testutil.RandomMultihashes(t, 1)
+		lnk, err := s.PutEntries(ctx, slices.Values(mhs))
+		require.NoError(t, err)
+		var got []multihash.Multihash
+		for mh, err := range s.Entries(ctx, lnk) {
+			require.NoError(t, err)
+			got = append(got, mh)
+		}
+		require.Equal(t, mhs, got)
+	})
+
+	t.Run("an inlined chunk encodes to the bytes a stored chunk would hold", func(t *testing.T) {
+		mhs := testutil.RandomMultihashes(t, 1)
+		inlined := store.FromDatastore(datastore.NewMapDatastore(), store.WithIdentityEntries())
+		inlinedLink, err := inlined.PutEntries(ctx, slices.Values(mhs))
+		require.NoError(t, err)
+		stored := store.FromDatastore(datastore.NewMapDatastore())
+		storedLink, err := stored.PutEntries(ctx, slices.Values(mhs))
+		require.NoError(t, err)
+		require.Equal(t, encodedBytes(t, ctx, stored, storedLink), encodedBytes(t, ctx, inlined, inlinedLink))
+	})
+
+	t.Run("two multihashes are stored", func(t *testing.T) {
+		s := store.FromDatastore(datastore.NewMapDatastore(), store.WithIdentityEntries())
+		lnk, err := s.PutEntries(ctx, slices.Values(testutil.RandomMultihashes(t, 2)))
+		require.NoError(t, err)
+		requireCidPrefix(t, lnk.(cidlink.Link).Cid, multicodec.DagCbor)
+	})
+
+	t.Run("without the option one multihash is stored", func(t *testing.T) {
+		s := store.FromDatastore(datastore.NewMapDatastore())
+		lnk, err := s.PutEntries(ctx, slices.Values(testutil.RandomMultihashes(t, 1)))
+		require.NoError(t, err)
+		requireCidPrefix(t, lnk.(cidlink.Link).Cid, multicodec.DagCbor)
+	})
+}
+
+func countKeys(t *testing.T, ctx context.Context, ds datastore.Datastore) int {
+	t.Helper()
+	res, err := ds.Query(ctx, dsq.Query{KeysOnly: true})
+	require.NoError(t, err)
+	entries, err := res.Rest()
+	require.NoError(t, err)
+	return len(entries)
 }
