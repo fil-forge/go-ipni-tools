@@ -372,7 +372,7 @@ func TestIdentityEntries(t *testing.T) {
 		requireCidPrefix(t, lnk.(cidlink.Link).Cid, multicodec.DagCbor)
 	})
 
-	t.Run("a chain of two chunks within the limit is stored", func(t *testing.T) {
+	t.Run("entries spanning two chunks within the limit are stored", func(t *testing.T) {
 		chunkSize := store.MaxEntryChunkSize
 		store.MaxEntryChunkSize = maxEntries - 1
 		t.Cleanup(func() { store.MaxEntryChunkSize = chunkSize })

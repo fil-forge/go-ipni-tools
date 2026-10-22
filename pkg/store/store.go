@@ -258,9 +258,9 @@ func PutEntries(ctx context.Context, ds SimpleStore, entries iter.Seq[multihash.
 	return putEntries(ctx, ds, entries, chunkSize, 0)
 }
 
-// putEntries writes the entries as a chain of chunks. A chain of one chunk
-// holding at most identityEntries multihashes is not written: its link is an
-// identity CID that carries the encoded chunk. Zero turns inlining off.
+// putEntries writes the entries as linked chunks. Entries that fit in one
+// chunk of at most identityEntries multihashes are not written: their link is
+// an identity CID that carries the encoded chunk. Zero turns inlining off.
 func putEntries(ctx context.Context, ds SimpleStore, entries iter.Seq[multihash.Multihash], chunkSize int, identityEntries int) (next ipld.Link, err error) {
 	mhs := make([]multihash.Multihash, 0, chunkSize)
 	var mhCount, chunkCount int

@@ -22,12 +22,13 @@ func WithMetadataContext(context metadata.MetadataContext) Option {
 	}
 }
 
-// WithIdentityEntries makes the store inline an entries chain of at most
-// maxEntries multihashes into its link: the link is an identity CID carrying
-// the encoded chunk, and nothing is written. The store serves the chunk by
-// decoding the CID, so an indexer fetches and verifies it as it would any
-// other block. Longer chains, and chains of more than one chunk, are stored
-// as usual. It panics when maxEntries is less than 1.
+// WithIdentityEntries makes the store inline the entries of an advertisement
+// with at most maxEntries multihashes into its link: the link is an identity
+// CID carrying the encoded chunk, and nothing is written. The store serves the
+// chunk by decoding the CID, so an indexer fetches and verifies it as it
+// would any other block. Entries with more multihashes, or that span more
+// than one chunk, are stored as usual. It panics when maxEntries is less
+// than 1.
 func WithIdentityEntries(maxEntries int) Option {
 	if maxEntries < 1 {
 		panic(fmt.Sprintf("store.WithIdentityEntries: maxEntries must be at least 1, got %d", maxEntries))
