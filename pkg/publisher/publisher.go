@@ -77,9 +77,17 @@ type BatchPublisher interface {
 // mappings could not be restored, and those may differ from what the store
 // held before the call. Entries blocks are content addressed and are left in
 // place. Like Publish, PublishBatch is not safe for concurrent use.
+//
+// When the store is a [store.Batcher], the batch reads the mappings of every
+// spec with one call per table and holds its writes until the commit, which
+// writes them with one call per table and then moves the head.
 func (p *IPNIPublisher) PublishBatch(ctx context.Context, provider peer.AddrInfo, specs []AdvertSpec) (ipld.Link, error) {
+	st, err := p.batchStore(ctx, provider.ID, specs)
+	if err != nil {
+		return nil, err
+	}
 	for _, spec := range specs {
-		adv, undo, err := generateAd(ctx, p.store, provider.ID, provider.Addrs, []byte(spec.ContextID), spec.Metadata, false, spec.Digests)
+		adv, undo, err := generateAd(ctx, st, provider.ID, provider.Addrs, []byte(spec.ContextID), spec.Metadata, false, spec.Digests)
 		if errors.Is(err, ErrAlreadyAdvertised) {
 			continue
 		}
@@ -97,11 +105,33 @@ func (p *IPNIPublisher) PublishBatch(ctx context.Context, provider peer.AddrInfo
 		}
 		p.batchPublisher.add(adv, undo)
 	}
-	link, err := p.batchPublisher.Commit(ctx)
+	link, err := p.batchPublisher.commitTo(ctx, st)
 	if err != nil {
 		return nil, fmt.Errorf("committing IPNI adverts: %w", err)
 	}
 	return link, nil
+}
+
+// batchStore returns the store a batch of specs is published against: a
+// [store.Batch] with the specs' mappings loaded when the publisher's store
+// can make one, and the store itself otherwise.
+func (p *IPNIPublisher) batchStore(ctx context.Context, provider peer.ID, specs []AdvertSpec) (store.PublisherStore, error) {
+	batcher, ok := p.store.(store.Batcher)
+	if !ok {
+		return p.store, nil
+	}
+	batch, ok := batcher.NewBatch()
+	if !ok {
+		return p.store, nil
+	}
+	contextIDs := make([][]byte, len(specs))
+	for i, spec := range specs {
+		contextIDs[i] = []byte(spec.ContextID)
+	}
+	if err := batch.Prefetch(ctx, provider, contextIDs); err != nil {
+		return nil, fmt.Errorf("reading IPNI mappings: %w", err)
+	}
+	return batch, nil
 }
 
 var _ BatchPublisher = (*IPNIPublisher)(nil)
