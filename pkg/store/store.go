@@ -265,8 +265,8 @@ func putEntries(ctx context.Context, ds SimpleStore, entries iter.Seq[multihash.
 	mhs := make([]multihash.Multihash, 0, chunkSize)
 	var mhCount, chunkCount int
 	for mh := range entries {
-		mhs = append(mhs, mh)
-		mhCount++
+		// A full chunk is written only once another multihash follows it, so
+		// entries that fill exactly one chunk can still be inlined below.
 		if len(mhs) >= chunkSize {
 			next, err = store(ctx, ds, toChunk(mhs, next), schema.EntryChunkPrototype.Type())
 			if err != nil {
@@ -276,6 +276,8 @@ func putEntries(ctx context.Context, ds SimpleStore, entries iter.Seq[multihash.
 			// NewLinkedListOfMhs makes it own copy, so safe to reuse mhs
 			mhs = mhs[:0]
 		}
+		mhs = append(mhs, mh)
+		mhCount++
 	}
 	if chunkCount == 0 && len(mhs) > 0 && len(mhs) <= identityEntries {
 		next, _, err = encodeBlock(toChunk(mhs, nil), schema.EntryChunkPrototype.Type(), multicodec.DagCbor, multihash.IDENTITY)

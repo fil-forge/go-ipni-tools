@@ -372,6 +372,16 @@ func TestIdentityEntries(t *testing.T) {
 		requireCidPrefix(t, lnk.(cidlink.Link).Cid, multicodec.DagCbor)
 	})
 
+	t.Run("entries filling exactly one chunk within the limit are inlined", func(t *testing.T) {
+		chunkSize := store.MaxEntryChunkSize
+		store.MaxEntryChunkSize = maxEntries
+		t.Cleanup(func() { store.MaxEntryChunkSize = chunkSize })
+		s := store.FromDatastore(datastore.NewMapDatastore(), store.WithIdentityEntries(maxEntries))
+		lnk, err := s.PutEntries(ctx, slices.Values(testutil.RandomMultihashes(t, maxEntries)))
+		require.NoError(t, err)
+		require.Equal(t, uint64(multihash.IDENTITY), lnk.(cidlink.Link).Cid.Prefix().MhType)
+	})
+
 	t.Run("entries spanning two chunks within the limit are stored", func(t *testing.T) {
 		chunkSize := store.MaxEntryChunkSize
 		store.MaxEntryChunkSize = maxEntries - 1
