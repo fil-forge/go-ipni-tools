@@ -29,6 +29,10 @@ func WithMetadataContext(context metadata.MetadataContext) Option {
 // would any other block. Entries with more multihashes, or that span more
 // than one chunk, are stored as usual. It panics when maxEntries is less
 // than 1.
+//
+// The identity digest grows by about 36 bytes per sha2-256 multihash. boxo's
+// verifcid rejects identity digests over 128 bytes by default, so tools built
+// on boxo reject the CID of more than three such multihashes.
 func WithIdentityEntries(maxEntries int) Option {
 	if maxEntries < 1 {
 		panic(fmt.Sprintf("store.WithIdentityEntries: maxEntries must be at least 1, got %d", maxEntries))
