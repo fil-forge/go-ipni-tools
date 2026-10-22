@@ -159,7 +159,7 @@ type AdStore struct {
 	chunkLinks      ProviderContextTable
 	metadata        ProviderContextTable
 	metadataContext metadata.MetadataContext
-	identityEntries bool
+	identityEntries int
 }
 
 var _ FullStore = (*AdStore)(nil)
@@ -255,13 +255,13 @@ func PutAdvert(ctx context.Context, ds SimpleStore, adv schema.Advertisement) (i
 }
 
 func PutEntries(ctx context.Context, ds SimpleStore, entries iter.Seq[multihash.Multihash], chunkSize int) (next ipld.Link, err error) {
-	return putEntries(ctx, ds, entries, chunkSize, false)
+	return putEntries(ctx, ds, entries, chunkSize, 0)
 }
 
-// putEntries writes the entries as a chain of chunks. With identityEntries, a
-// chain of one chunk holding one multihash is not written: its link is an
-// identity CID that carries the encoded chunk.
-func putEntries(ctx context.Context, ds SimpleStore, entries iter.Seq[multihash.Multihash], chunkSize int, identityEntries bool) (next ipld.Link, err error) {
+// putEntries writes the entries as a chain of chunks. A chain of one chunk
+// holding at most identityEntries multihashes is not written: its link is an
+// identity CID that carries the encoded chunk. Zero turns inlining off.
+func putEntries(ctx context.Context, ds SimpleStore, entries iter.Seq[multihash.Multihash], chunkSize int, identityEntries int) (next ipld.Link, err error) {
 	mhs := make([]multihash.Multihash, 0, chunkSize)
 	var mhCount, chunkCount int
 	for mh := range entries {
@@ -277,7 +277,7 @@ func putEntries(ctx context.Context, ds SimpleStore, entries iter.Seq[multihash.
 			mhs = mhs[:0]
 		}
 	}
-	if identityEntries && chunkCount == 0 && len(mhs) == 1 {
+	if chunkCount == 0 && len(mhs) > 0 && len(mhs) <= identityEntries {
 		next, _, err = encodeBlock(toChunk(mhs, nil), schema.EntryChunkPrototype.Type(), multicodec.DagCbor, multihash.IDENTITY)
 		if err != nil {
 			return nil, err

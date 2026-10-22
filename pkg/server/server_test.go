@@ -39,10 +39,10 @@ func TestSyncAdvertWithIdentityEntries(t *testing.T) {
 	pid, err := peer.IDFromPrivateKey(priv)
 	require.NoError(t, err)
 
-	st := store.FromDatastore(dssync.MutexWrap(datastore.NewMapDatastore()), store.WithIdentityEntries())
+	st := store.FromDatastore(dssync.MutexWrap(datastore.NewMapDatastore()), store.WithIdentityEntries(3))
 	pub, err := publisher.New(priv, st)
 	require.NoError(t, err)
-	digests := intrnl_testutil.RandomMultihashes(t, 1)
+	digests := intrnl_testutil.RandomMultihashes(t, 3)
 	adLink, err := pub.Publish(ctx, peer.AddrInfo{ID: pid}, testutil.RandomCID(t).String(), slices.Values(digests), metadata.Default.New())
 	require.NoError(t, err)
 	ad, err := st.Advert(ctx, adLink)
