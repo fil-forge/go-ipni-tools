@@ -33,6 +33,7 @@ type AsyncPublisher interface {
 type IPNIPublisher struct {
 	batchPublisher *AdvertisementPublisher
 	store          store.PublisherStore
+	batchStore     store.BatchStore
 }
 
 // Publish creates a new advertisement from the latest head, signs it, and publishes it.
@@ -70,38 +71,16 @@ type BatchPublisher interface {
 // is the head after the commit, unchanged when every spec was skipped and nil
 // when nothing has ever been published.
 //
-// On failure, every mapping from provider and context ID that this call
-// wrote, the one being generated when it failed included, is put back to what
-// it was, so calling again with the same specs publishes every one of them.
-// Undoing a write can itself fail; the returned error then says which
-// mappings could not be restored, and those may differ from what the store
-// held before the call. Entries blocks are content addressed and are left in
-// place. Like Publish, PublishBatch is not safe for concurrent use.
+// PublishBatch reads the mappings of every spec with one call to the batch
+// store, writes the adverts with one call, and writes the mappings and moves
+// the head with one call (see [WithBatchStore]). On failure the store holds
+// the mappings it held before the call, so calling again with the same specs
+// publishes every one of them. With the default batch store, putting a mapping back can itself
+// fail; the returned error then says which mappings could not be restored.
+// Entries blocks and adverts are content addressed and are left in place.
+// Like Publish, PublishBatch is not safe for concurrent use.
 func (p *IPNIPublisher) PublishBatch(ctx context.Context, provider peer.AddrInfo, specs []AdvertSpec) (ipld.Link, error) {
-	for _, spec := range specs {
-		adv, undo, err := generateAd(ctx, p.store, provider.ID, provider.Addrs, []byte(spec.ContextID), spec.Metadata, false, spec.Digests)
-		if errors.Is(err, ErrAlreadyAdvertised) {
-			continue
-		}
-		if err != nil {
-			cctx, cancel := cleanupContext(ctx)
-			defer cancel()
-			errs := []error{fmt.Errorf("generating IPNI advert: %w", err)}
-			if undo != nil {
-				if uerr := undo(cctx); uerr != nil {
-					errs = append(errs, fmt.Errorf("rolling back the advert being generated: %w", uerr))
-				}
-			}
-			errs = append(errs, p.batchPublisher.Discard(cctx))
-			return nil, errors.Join(errs...)
-		}
-		p.batchPublisher.add(adv, undo)
-	}
-	link, err := p.batchPublisher.Commit(ctx)
-	if err != nil {
-		return nil, fmt.Errorf("committing IPNI adverts: %w", err)
-	}
-	return link, nil
+	return p.publishBatch(ctx, provider, specs)
 }
 
 var _ BatchPublisher = (*IPNIPublisher)(nil)
@@ -115,9 +94,14 @@ func New(id crypto.PrivKey, store store.PublisherStore, opts ...Option) (*IPNIPu
 	if err != nil {
 		return nil, err
 	}
+	batchStore := bp.batchStore
+	if batchStore == nil {
+		batchStore = perItemBatchStore{store}
+	}
 	return &IPNIPublisher{
 		batchPublisher: bp,
 		store:          store,
+		batchStore:     batchStore,
 	}, nil
 }
 

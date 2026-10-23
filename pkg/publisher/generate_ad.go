@@ -7,11 +7,13 @@ import (
 	"fmt"
 	"iter"
 
+	"github.com/ipld/go-ipld-prime"
 	"github.com/ipni/go-libipni/ingest/schema"
 	"github.com/ipni/go-libipni/metadata"
 	"github.com/libp2p/go-libp2p/core/peer"
 	"github.com/multiformats/go-multiaddr"
 	mh "github.com/multiformats/go-multihash"
+	"go.uber.org/zap"
 
 	"github.com/fil-forge/go-ipni-tools/pkg/store"
 )
@@ -79,39 +81,25 @@ func generateAd(ctx context.Context, publisherStore store.PublisherStore, peer p
 	if !isRm {
 		log.Info("Creating advertisement")
 
-		// If no previously-published ad for this context ID.
+		prior := store.ContextRecord{ChunkLink: chunkLink}
+		if hadMetadata {
+			prior.Metadata = &prevMetadata
+		}
+		next, err := nextRecord(log, prior, md, func() (ipld.Link, error) {
+			return publisherStore.PutEntries(ctx, mhs)
+		})
+		if err != nil {
+			return schema.Advertisement{}, undo, err
+		}
+
 		if chunkLink == nil {
-			log.Info("Generating entries linked list for advertisement")
-
-			// Generate the linked list ipld.Link that is added to the
-			// advertisement and used for ingestion.
-			chunkLink, err = publisherStore.PutEntries(ctx, mhs)
-			if err != nil {
-				return schema.Advertisement{}, undo, fmt.Errorf("could not generate entries list: %s", err)
-			}
-			if chunkLink == nil {
-				log.Warnw("chunking for context ID resulted in no link", "contextID", contextID)
-				chunkLink = schema.NoEntries
-			}
-
+			chunkLink = next.ChunkLink
 			// Store the relationship between providerID, contextID and CID of the
 			// advertised list of Cids.
 			err = publisherStore.PutChunkLinkForProviderAndContextID(ctx, peer, contextID, chunkLink)
 			if err != nil {
 				return schema.Advertisement{}, undo, fmt.Errorf("failed to write provider + context id to entries cid mapping: %s", err)
 			}
-		} else {
-			if !hadMetadata {
-				log.Warn("No metadata for existing provider + context ID, generating new advertisement")
-			}
-			if md.Equal(prevMetadata) {
-				// Metadata is the same; no change, no need for new
-				// advertisement.
-				return schema.Advertisement{}, undo, ErrAlreadyAdvertised
-			}
-
-			// Linked list is the same, but metadata is different, so generate
-			// new advertisement with same linked list, but new metadata.
 		}
 
 		if err = publisherStore.PutMetadataForProviderAndContextID(ctx, peer, contextID, md); err != nil {
@@ -162,4 +150,32 @@ func generateAd(ctx context.Context, publisherStore store.PublisherStore, peer p
 		Metadata:  mdBytes,
 		IsRm:      isRm,
 	}, undo, nil
+}
+
+// nextRecord returns the record a context ID holds once md is advertised
+// under it, given the record it holds now, or [ErrAlreadyAdvertised] when its
+// content is mapped and carries md already. For a context ID with no entries
+// mapping it calls putEntries, which writes the entries and returns their
+// link. An existing entries mapping is kept: the content is advertised again
+// under the new metadata.
+func nextRecord(log *zap.SugaredLogger, prior store.ContextRecord, md metadata.Metadata, putEntries func() (ipld.Link, error)) (store.ContextRecord, error) {
+	if prior.ChunkLink != nil {
+		if prior.Metadata == nil {
+			log.Warn("No metadata for existing provider + context ID, generating new advertisement")
+		} else if md.Equal(*prior.Metadata) {
+			return store.ContextRecord{}, ErrAlreadyAdvertised
+		}
+		return store.ContextRecord{ChunkLink: prior.ChunkLink, Metadata: &md}, nil
+	}
+
+	log.Info("Generating entries linked list for advertisement")
+	chunkLink, err := putEntries()
+	if err != nil {
+		return store.ContextRecord{}, fmt.Errorf("could not generate entries list: %s", err)
+	}
+	if chunkLink == nil {
+		log.Warn("chunking for context ID resulted in no link")
+		chunkLink = schema.NoEntries
+	}
+	return store.ContextRecord{ChunkLink: chunkLink, Metadata: &md}, nil
 }
