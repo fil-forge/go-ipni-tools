@@ -4,6 +4,8 @@ import (
 	"net/url"
 
 	"github.com/multiformats/go-multiaddr"
+
+	"github.com/fil-forge/go-ipni-tools/pkg/store"
 )
 
 // Option is an option configuring a publisher.
@@ -13,6 +15,7 @@ type options struct {
 	pubHTTPAnnounceAddrs []multiaddr.Multiaddr
 	topic                string
 	announceURLs         []*url.URL
+	batchStore           store.BatchStore
 }
 
 // WithDirectAnnounce sets indexer URLs to send direct HTTP announcements to.
@@ -49,6 +52,18 @@ func WithAnnounceAddrs(addrs ...string) Option {
 func WithTopic(topic string) Option {
 	return func(opts *options) error {
 		opts.topic = topic
+		return nil
+	}
+}
+
+// WithBatchStore sets the store a batch is published through. Without it, a
+// batch reads and writes its mappings one call at a time through the
+// publisher's store, and writes back the mappings it changed when its commit
+// fails. A store with transactions, or with calls that read and write many
+// mappings at once, publishes a batch with fewer calls.
+func WithBatchStore(batchStore store.BatchStore) Option {
+	return func(opts *options) error {
+		opts.batchStore = batchStore
 		return nil
 	}
 }

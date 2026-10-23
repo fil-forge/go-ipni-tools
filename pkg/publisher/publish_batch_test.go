@@ -123,7 +123,7 @@ func TestPublishBatch(t *testing.T) {
 		specs := batchSpecs(t, 7)
 		_, err = p.PublishBatch(ctx, provInfo, specs)
 		require.NoError(t, err)
-		require.Equal(t, len(specs), counting.chunkReads, "the prior state is read once, by generation itself")
+		require.Equal(t, len(specs), counting.chunkReads, "the prior state is read once, before any advert is planned")
 	})
 
 	t.Run("already advertised specs are skipped", func(t *testing.T) {
@@ -343,9 +343,9 @@ func TestPublishBatchRollback(t *testing.T) {
 
 	t.Run("two specs for one context roll back to nothing", func(t *testing.T) {
 		st := batchStore()
-		// The third metadata write is the new spec's; the first two are the
-		// same context advertised twice, under different metadata.
-		failing := &failingMetadataStore{PublisherStore: st, failOn: 3}
+		// The same context advertised twice, under different metadata, is one
+		// mapping change, so the second metadata write is the new spec's.
+		failing := &failingMetadataStore{PublisherStore: st, failOn: 2}
 		p, err := publisher.New(priv, failing)
 		require.NoError(t, err)
 
@@ -356,9 +356,8 @@ func TestPublishBatchRollback(t *testing.T) {
 		_, err = p.PublishBatch(ctx, provInfo, batch)
 		require.ErrorContains(t, err, errInjected.Error())
 
-		// Undone newest first, the second advert's undo restores the first's
-		// mapping and the first's undo removes it. The other order would
-		// leave the context mapped and the retry skip the first advert.
+		// The context goes back to the record it had before the batch, not to
+		// the one its first advert left, so the retry publishes both adverts.
 		requireUnmapped(t, ctx, st, pid, specs[0].ContextID, "the twice-advertised context")
 		requireUnmapped(t, ctx, st, pid, specs[1].ContextID, "the new spec")
 
