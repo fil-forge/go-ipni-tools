@@ -159,6 +159,7 @@ type AdStore struct {
 	chunkLinks      ProviderContextTable
 	metadata        ProviderContextTable
 	metadataContext metadata.MetadataContext
+	identityEntries int
 }
 
 var _ FullStore = (*AdStore)(nil)
@@ -176,7 +177,7 @@ func (s *AdStore) Entries(ctx context.Context, root ipld.Link) iter.Seq2[multiha
 }
 
 func (s *AdStore) PutEntries(ctx context.Context, mhs iter.Seq[multihash.Multihash]) (ipld.Link, error) {
-	return PutEntries(ctx, s.store, mhs, MaxEntryChunkSize)
+	return putEntries(ctx, s.store, mhs, MaxEntryChunkSize, s.identityEntries)
 }
 
 func (s *AdStore) Encode(ctx context.Context, id datamodel.Link, w io.Writer) error {
@@ -228,7 +229,7 @@ func NewPublisherStore(store Store, chunkLinks, metadataTable ProviderContextTab
 	if mctx == nil {
 		mctx = metadata.Default
 	}
-	return &AdStore{store, chunkLinks, metadataTable, mctx}
+	return &AdStore{store, chunkLinks, metadataTable, mctx, o.identityEntries}
 }
 
 func Advert(ctx context.Context, ds SimpleStore, id ipld.Link) (schema.Advertisement, error) {
@@ -254,11 +255,18 @@ func PutAdvert(ctx context.Context, ds SimpleStore, adv schema.Advertisement) (i
 }
 
 func PutEntries(ctx context.Context, ds SimpleStore, entries iter.Seq[multihash.Multihash], chunkSize int) (next ipld.Link, err error) {
+	return putEntries(ctx, ds, entries, chunkSize, 0)
+}
+
+// putEntries writes the entries as linked chunks. Entries that fit in one
+// chunk of at most identityEntries multihashes are not written: their link is
+// an identity CID that carries the encoded chunk. Zero turns inlining off.
+func putEntries(ctx context.Context, ds SimpleStore, entries iter.Seq[multihash.Multihash], chunkSize int, identityEntries int) (next ipld.Link, err error) {
 	mhs := make([]multihash.Multihash, 0, chunkSize)
 	var mhCount, chunkCount int
 	for mh := range entries {
-		mhs = append(mhs, mh)
-		mhCount++
+		// A full chunk is written only once another multihash follows it, so
+		// entries that fill exactly one chunk can still be inlined below.
 		if len(mhs) >= chunkSize {
 			next, err = store(ctx, ds, toChunk(mhs, next), schema.EntryChunkPrototype.Type())
 			if err != nil {
@@ -268,6 +276,16 @@ func PutEntries(ctx context.Context, ds SimpleStore, entries iter.Seq[multihash.
 			// NewLinkedListOfMhs makes it own copy, so safe to reuse mhs
 			mhs = mhs[:0]
 		}
+		mhs = append(mhs, mh)
+		mhCount++
+	}
+	if chunkCount == 0 && len(mhs) > 0 && len(mhs) <= identityEntries {
+		next, _, err = encodeBlock(toChunk(mhs, nil), schema.EntryChunkPrototype.Type(), multicodec.DagCbor, multihash.IDENTITY)
+		if err != nil {
+			return nil, err
+		}
+		log.Infow("Generated identity entries chunk", "totalMhCount", mhCount)
+		return next, nil
 	}
 	if len(mhs) != 0 {
 		next, err = store(ctx, ds, toChunk(mhs, next), schema.EntryChunkPrototype.Type())
@@ -285,13 +303,7 @@ func Entries(ctx context.Context, ds SimpleStore, root ipld.Link) iter.Seq2[mult
 	return func(yield func(multihash.Multihash, error) bool) {
 		cur := root
 		for cur != nil && cur != schema.NoEntries {
-			r, err := ds.Get(ctx, cur.String())
-			if err != nil {
-				yield(nil, err)
-				return
-			}
-			defer r.Close()
-			v, err := io.ReadAll(r)
+			v, err := getBlock(ctx, ds, cur)
 			if err != nil {
 				yield(nil, err)
 				return
@@ -314,6 +326,10 @@ func Entries(ctx context.Context, ds SimpleStore, root ipld.Link) iter.Seq2[mult
 }
 
 func Encode(ctx context.Context, ds SimpleStore, lnk ipld.Link, w io.Writer) error {
+	if data, ok := identityData(lnk); ok {
+		_, err := w.Write(data)
+		return err
+	}
 	r, err := ds.Get(ctx, lnk.String())
 	if err != nil {
 		return err
@@ -345,13 +361,13 @@ func EncodeHead(ctx context.Context, ds SimpleStore, w io.Writer) error {
 func ReplaceHead(ctx context.Context, ds Store, oldHead *head.SignedHead, newHead *head.SignedHead) (datamodel.Link, error) {
 	// The head is dag-json encoded by convention — unlike adverts and entries
 	// it is fetched by name ("head"), so there is no CID to signal its codec.
-	newLink, newBytes, err := encodeBlock(newHead, head.SignedHeadPrototype.Type(), multicodec.DagJson)
+	newLink, newBytes, err := encodeBlock(newHead, head.SignedHeadPrototype.Type(), multicodec.DagJson, multihash.SHA2_256)
 	if err != nil {
 		return nil, err
 	}
 	var oldBytesReader io.Reader
 	if oldHead != nil {
-		_, oldBytes, err := encodeBlock(oldHead, head.SignedHeadPrototype.Type(), multicodec.DagJson)
+		_, oldBytes, err := encodeBlock(oldHead, head.SignedHeadPrototype.Type(), multicodec.DagJson, multihash.SHA2_256)
 		if err != nil {
 			return nil, err
 		}
@@ -401,7 +417,7 @@ func PutMetadata(ctx context.Context, ds ProviderContextTable, p peer.ID, contex
 }
 
 func store(ctx context.Context, ds SimpleStore, value any, typ ipldschema.Type) (ipld.Link, error) {
-	lnk, data, err := encodeBlock(value, typ, multicodec.DagCbor)
+	lnk, data, err := encodeBlock(value, typ, multicodec.DagCbor, multihash.SHA2_256)
 	if err != nil {
 		return nil, err
 	}
@@ -413,9 +429,9 @@ func store(ctx context.Context, ds SimpleStore, value any, typ ipldschema.Type) 
 }
 
 // encodeBlock encodes the value with the given IPLD codec and returns the
-// link (a CID of that codec with sha2-256 multihash) along with the encoded
-// bytes.
-func encodeBlock(value any, typ ipldschema.Type, codec multicodec.Code) (_ ipld.Link, _ []byte, err error) {
+// link (a CID of that codec with a multihash of the given hash function)
+// along with the encoded bytes.
+func encodeBlock(value any, typ ipldschema.Type, codec multicodec.Code, hash uint64) (_ ipld.Link, _ []byte, err error) {
 	// bindnode panics on schema mismatch, so recover it into an error.
 	defer func() {
 		if r := recover(); r != nil {
@@ -437,11 +453,39 @@ func encodeBlock(value any, typ ipldschema.Type, codec multicodec.Code) (_ ipld.
 	if err != nil {
 		return nil, nil, err
 	}
-	mh, err := multihash.Sum(data, multihash.SHA2_256, -1)
+	mh, err := multihash.Sum(data, hash, -1)
 	if err != nil {
 		return nil, nil, err
 	}
 	return cidlink.Link{Cid: cid.NewCidV1(uint64(codec), mh)}, data, nil
+}
+
+// getBlock returns the bytes of the block the link points to, decoding them
+// from the link itself when it is an identity CID.
+func getBlock(ctx context.Context, ds SimpleStore, lnk ipld.Link) ([]byte, error) {
+	if data, ok := identityData(lnk); ok {
+		return data, nil
+	}
+	r, err := ds.Get(ctx, lnk.String())
+	if err != nil {
+		return nil, err
+	}
+	defer r.Close()
+	return io.ReadAll(r)
+}
+
+// identityData returns the data an identity CID carries, and false for any
+// other link.
+func identityData(lnk ipld.Link) ([]byte, bool) {
+	c := asCID(lnk)
+	if c.Prefix().MhType != multihash.IDENTITY {
+		return nil, false
+	}
+	decoded, err := multihash.Decode(c.Hash())
+	if err != nil {
+		return nil, false
+	}
+	return decoded.Digest, true
 }
 
 func toChunk(mhs []multihash.Multihash, next ipld.Link) *schema.EntryChunk {

@@ -11,6 +11,7 @@ import (
 
 	"github.com/ipfs/go-cid"
 	"github.com/ipfs/go-datastore"
+	dsq "github.com/ipfs/go-datastore/query"
 	"github.com/ipld/go-ipld-prime"
 	"github.com/ipld/go-ipld-prime/codec/dagcbor"
 	"github.com/ipld/go-ipld-prime/codec/dagjson"
@@ -317,4 +318,101 @@ func encodeBlock(t *testing.T, chunk *libschema.EntryChunk, codec multicodec.Cod
 	mh, err := multihash.Sum(data, multihash.SHA2_256, -1)
 	require.NoError(t, err)
 	return cidlink.Link{Cid: cid.NewCidV1(uint64(codec), mh)}, data
+}
+
+func TestIdentityEntries(t *testing.T) {
+	ctx := context.Background()
+	const maxEntries = 3
+
+	for _, count := range []int{1, maxEntries} {
+		t.Run(fmt.Sprintf("%d multihashes are inlined into an identity CID", count), func(t *testing.T) {
+			s := store.FromDatastore(datastore.NewMapDatastore(), store.WithIdentityEntries(maxEntries))
+			lnk, err := s.PutEntries(ctx, slices.Values(testutil.RandomMultihashes(t, count)))
+			require.NoError(t, err)
+			require.Equal(t, uint64(multihash.IDENTITY), lnk.(cidlink.Link).Cid.Prefix().MhType)
+		})
+	}
+
+	t.Run("an inlined chunk writes nothing", func(t *testing.T) {
+		ds := datastore.NewMapDatastore()
+		s := store.FromDatastore(ds, store.WithIdentityEntries(maxEntries))
+		_, err := s.PutEntries(ctx, slices.Values(testutil.RandomMultihashes(t, maxEntries)))
+		require.NoError(t, err)
+		require.Equal(t, 0, countKeys(t, ctx, ds))
+	})
+
+	t.Run("an inlined chunk reads back", func(t *testing.T) {
+		s := store.FromDatastore(datastore.NewMapDatastore(), store.WithIdentityEntries(maxEntries))
+		mhs := testutil.RandomMultihashes(t, maxEntries)
+		lnk, err := s.PutEntries(ctx, slices.Values(mhs))
+		require.NoError(t, err)
+		var got []multihash.Multihash
+		for mh, err := range s.Entries(ctx, lnk) {
+			require.NoError(t, err)
+			got = append(got, mh)
+		}
+		require.Equal(t, mhs, got)
+	})
+
+	t.Run("an inlined chunk encodes to the bytes a stored chunk would hold", func(t *testing.T) {
+		mhs := testutil.RandomMultihashes(t, maxEntries)
+		inlined := store.FromDatastore(datastore.NewMapDatastore(), store.WithIdentityEntries(maxEntries))
+		inlinedLink, err := inlined.PutEntries(ctx, slices.Values(mhs))
+		require.NoError(t, err)
+		stored := store.FromDatastore(datastore.NewMapDatastore())
+		storedLink, err := stored.PutEntries(ctx, slices.Values(mhs))
+		require.NoError(t, err)
+		require.Equal(t, encodedBytes(t, ctx, stored, storedLink), encodedBytes(t, ctx, inlined, inlinedLink))
+	})
+
+	t.Run("more multihashes than the limit are stored", func(t *testing.T) {
+		s := store.FromDatastore(datastore.NewMapDatastore(), store.WithIdentityEntries(maxEntries))
+		lnk, err := s.PutEntries(ctx, slices.Values(testutil.RandomMultihashes(t, maxEntries+1)))
+		require.NoError(t, err)
+		requireCidPrefix(t, lnk.(cidlink.Link).Cid, multicodec.DagCbor)
+	})
+
+	t.Run("entries filling exactly one chunk within the limit are inlined", func(t *testing.T) {
+		chunkSize := store.MaxEntryChunkSize
+		store.MaxEntryChunkSize = maxEntries
+		t.Cleanup(func() { store.MaxEntryChunkSize = chunkSize })
+		s := store.FromDatastore(datastore.NewMapDatastore(), store.WithIdentityEntries(maxEntries))
+		lnk, err := s.PutEntries(ctx, slices.Values(testutil.RandomMultihashes(t, maxEntries)))
+		require.NoError(t, err)
+		require.Equal(t, uint64(multihash.IDENTITY), lnk.(cidlink.Link).Cid.Prefix().MhType)
+	})
+
+	t.Run("entries spanning two chunks within the limit are stored", func(t *testing.T) {
+		chunkSize := store.MaxEntryChunkSize
+		store.MaxEntryChunkSize = maxEntries - 1
+		t.Cleanup(func() { store.MaxEntryChunkSize = chunkSize })
+		s := store.FromDatastore(datastore.NewMapDatastore(), store.WithIdentityEntries(maxEntries))
+		lnk, err := s.PutEntries(ctx, slices.Values(testutil.RandomMultihashes(t, maxEntries)))
+		require.NoError(t, err)
+		requireCidPrefix(t, lnk.(cidlink.Link).Cid, multicodec.DagCbor)
+	})
+
+	t.Run("without the option one multihash is stored", func(t *testing.T) {
+		s := store.FromDatastore(datastore.NewMapDatastore())
+		lnk, err := s.PutEntries(ctx, slices.Values(testutil.RandomMultihashes(t, 1)))
+		require.NoError(t, err)
+		requireCidPrefix(t, lnk.(cidlink.Link).Cid, multicodec.DagCbor)
+	})
+
+	for _, maxEntries := range []int{0, -1} {
+		t.Run(fmt.Sprintf("a limit of %d panics", maxEntries), func(t *testing.T) {
+			require.PanicsWithValue(t,
+				fmt.Sprintf("store.WithIdentityEntries: maxEntries must be at least 1, got %d", maxEntries),
+				func() { store.WithIdentityEntries(maxEntries) })
+		})
+	}
+}
+
+func countKeys(t *testing.T, ctx context.Context, ds datastore.Datastore) int {
+	t.Helper()
+	res, err := ds.Query(ctx, dsq.Query{KeysOnly: true})
+	require.NoError(t, err)
+	entries, err := res.Rest()
+	require.NoError(t, err)
+	return len(entries)
 }
