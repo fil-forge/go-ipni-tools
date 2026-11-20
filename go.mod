@@ -1,10 +1,10 @@
 module github.com/fil-forge/go-ipni-tools
 
-go 1.26.0
+go 1.27.0
 
 require (
 	github.com/fil-forge/libforge v0.0.0-20260701162346-f0706e1641a3
-	github.com/fil-forge/ucantone v0.0.0-20260630103048-a8f24fe31eb6
+	github.com/fil-forge/ucantone v0.0.0-20261120104359-4253712d41e4
 	github.com/ipfs/go-cid v0.6.2
 	github.com/ipfs/go-datastore v0.9.2
 	github.com/ipfs/go-log/v2 v2.9.2
@@ -21,9 +21,9 @@ require (
 )
 
 require (
-	github.com/alanshaw/dag-json-gen v0.0.8 // indirect
+	github.com/alanshaw/dag-json-gen v0.0.11 // indirect
 	github.com/decred/dcrd/dcrec/secp256k1/v4 v4.4.1 // indirect
-	github.com/gobwas/glob v0.2.3 // indirect
+	github.com/gobwas/glob v1.1.0 // indirect
 	github.com/google/uuid v1.6.0 // indirect
 	github.com/hashicorp/go-cleanhttp v0.5.2 // indirect
 	github.com/hashicorp/go-retryablehttp v0.7.8 // indirect
